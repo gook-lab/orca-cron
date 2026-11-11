@@ -555,7 +555,8 @@ struct ScheduleRow: View {
     }
 
     func scheduleLine(_ s: Schedule) -> String {
-        let what = s.task.flatMap { model.taskTitle($0) }.map { "템플릿 「\($0)」" } ?? "직접 입력"
+        let what = s.task.flatMap { model.taskTitle($0) }.map { "템플릿 「\($0)」" }
+            ?? (s.isCommand ? "명령 " + ((s.prompt ?? "").split(separator: " ").first.map(String.init) ?? "") : "직접 입력")
         if s.isOneShot { return "1회 보내기 · \(what) · " + (s.tracksResult ? "결과 받음" : "결과 안 받음") }
         let when = Cron(s.cron)?.summary ?? "잘못된 cron: \(s.cron)"
         let next = s.nextRunAt ?? Cron(s.cron)?.next(after: Date())
@@ -702,15 +703,112 @@ struct TemplatePicker: View {
 struct PromptEditor: View {
     @Binding var text: String
     var height: CGFloat = 72
+    /// 비어 있지 않으면 `/` 자동완성을 켠다.
+    var commands: [ClaudeCommand] = []
+    @State private var browsing = false
+
+    var suggestions: [ClaudeCommand] {
+        guard !commands.isEmpty, let token = CommandCatalog.trailingToken(text) else { return [] }
+        let hits = CommandCatalog.match(token, in: commands, limit: 6)
+        return hits.count == 1 && hits[0].name == token ? [] : hits
+    }
 
     var body: some View {
-        TextEditor(text: $text)
-            .font(.callout)
-            .scrollContentBackground(.hidden)
-            .padding(4)
-            .frame(minHeight: height, maxHeight: height)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+        VStack(alignment: .leading, spacing: 4) {
+            TextEditor(text: $text)
+                .font(.callout)
+                .scrollContentBackground(.hidden)
+                .padding(4)
+                .frame(minHeight: height, maxHeight: height)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+                .onKeyPress(.tab) {
+                    guard let first = suggestions.first else { return .ignored }
+                    text = CommandCatalog.complete(text, with: first.name)
+                    return .handled
+                }
+            if !suggestions.isEmpty {
+                CommandList(items: suggestions) { text = CommandCatalog.complete(text, with: $0.name) }
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                Text("누르거나 tab 으로 넣기").font(.caption2).foregroundStyle(.tertiary)
+            } else if !commands.isEmpty {
+                Button { browsing = true } label: {
+                    Label("/ 명령 넣기", systemImage: "command").font(.caption)
+                }
+                .buttonStyle(.icon)
+                .help("이 터미널에서 쓸 수 있는 Claude 명령·스킬 \(commands.count)개. 입력 칸에서 / 를 쳐도 뜹니다")
+                .popover(isPresented: $browsing, arrowEdge: .bottom) {
+                    CommandBrowser(commands: commands) { c in
+                        text = CommandCatalog.complete(text.hasSuffix(" ") || text.hasSuffix("\n") || text.isEmpty ? text : text + " ", with: c.name)
+                        browsing = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 명령 후보 줄 — 이름 · 설명 · 출처.
+struct CommandList: View {
+    let items: [ClaudeCommand]
+    let pick: (ClaudeCommand) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(items) { c in
+                Button { pick(c) } label: { CommandRow(command: c) }
+                    .buttonStyle(.icon)
+            }
+        }
+        .padding(2)
+    }
+}
+
+struct CommandRow: View {
+    let command: ClaudeCommand
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("/" + command.name).font(.system(.caption, design: .monospaced).weight(.semibold))
+                .foregroundStyle(.primary).lineLimit(1).fixedSize()
+            Text(command.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 4)
+            if !command.modelInvocable {
+                Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    .help("받는 Claude 가 스스로 부를 수 없음 — 명령만 그대로 보낼 때만 실행")
+            }
+            Text(command.source).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
+
+/// 「/ 명령 넣기」 — 검색해서 고르는 목록.
+struct CommandBrowser: View {
+    let commands: [ClaudeCommand]
+    let pick: (ClaudeCommand) -> Void
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SearchField(text: $query, prompt: "명령·스킬 \(commands.count)개에서 찾기")
+            ScrollView {
+                CommandList(items: query.isEmpty ? commands : CommandCatalog.match(query, in: commands, limit: 200), pick: pick)
+            }
+            .frame(height: 260)
+        }
+        .padding(10)
+        .frame(width: 380)
+    }
+}
+
+/// 직접 입력이 `/` 로 시작할 때의 안내.
+struct CommandNote: View {
+    var body: some View {
+        Text("명령으로 시작해 글 그대로 보냅니다. 받는 Claude Code 가 명령을 실행하고, 결과 받기는 할 수 없습니다.")
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -861,7 +959,9 @@ struct EditView: View {
                     if useTemplate {
                         TemplatePicker(model: model, key: $draft.task) { go(.templates) }
                     } else {
-                        PromptEditor(text: Binding(get: { draft.prompt ?? "" }, set: { draft.prompt = $0 }))
+                        PromptEditor(text: Binding(get: { draft.prompt ?? "" }, set: { draft.prompt = $0 }),
+                                     commands: model.commands(forTerminal: draft.terminal.handle))
+                        if draft.isCommand { CommandNote() }
                     }
                 }
                 FormRow(title: "시각") {
@@ -993,13 +1093,14 @@ struct SendView: View {
     @State private var handle: String
     @State private var task: String?
     @State private var useTemplate: Bool
-    @State private var text = ""
+    @State private var text: String
     @State private var track: Bool
     let done: () -> Void
 
-    init(model: AppModel, handle: String, task: String?, done: @escaping () -> Void) {
+    init(model: AppModel, handle: String, task: String?, text: String = "", done: @escaping () -> Void) {
         self.model = model
         self.done = done
+        _text = State(initialValue: text)
         _handle = State(initialValue: handle)
         _task = State(initialValue: task)
         _useTemplate = State(initialValue: task != nil)
@@ -1009,6 +1110,8 @@ struct SendView: View {
     var valid: Bool {
         !handle.isEmpty && (useTemplate ? task != nil : !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
+
+    var isCommand: Bool { !useTemplate && text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1027,12 +1130,14 @@ struct SendView: View {
                     if useTemplate {
                         TemplatePicker(model: model, key: $task, manage: nil)
                     } else {
-                        PromptEditor(text: $text, height: 110)
+                        PromptEditor(text: $text, height: 110, commands: model.commands(forTerminal: handle))
+                        if isCommand { CommandNote() }
                     }
                 }
                 FormRow(title: "결과") {
                     Toggle("끝나면 결과를 메뉴바에 남기게 하기", isOn: $track).toggleStyle(.checkbox)
-                    Text(track
+                        .disabled(isCommand)
+                    Text(isCommand ? "명령은 결과를 받을 수 없습니다." : track
                          ? "보내는 글 끝에 결과 명령이 붙고, 그 터미널의 Claude 가 마치면 결과가 목록에 남습니다."
                          : "쓴 글을 그대로 보냅니다.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -1240,7 +1345,14 @@ struct TemplateEditView: View {
                     TextField("한 줄 설명(목록에 보임)", text: $detail).textFieldStyle(.roundedBorder)
                 }
                 FormRow(title: "내용") {
-                    PromptEditor(text: $bodyText, height: 220)
+                    PromptEditor(text: $bodyText, height: 220, commands: model.commandsForAnyTerminal)
+                    let locked = CommandCatalog.locked(in: bodyText, list: model.commandsForAnyTerminal)
+                    if !locked.isEmpty {
+                        Text("⚠︎ " + locked.map { "/" + $0.name }.joined(separator: " · ")
+                             + " 은(는) 받는 Claude 가 스스로 부를 수 없어 템플릿으로는 실행되지 않습니다(내장 명령·잠긴 스킬). 「보내기」나 예약의 직접 입력에 명령만 넣어 주세요.")
+                            .font(.caption).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text("받는 터미널의 Claude 가 이 내용을 읽고 그대로 실행합니다. 경로·대상을 빠짐없이 적으세요.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

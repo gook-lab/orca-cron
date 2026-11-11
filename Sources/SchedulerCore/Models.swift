@@ -69,7 +69,9 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
     public static let historyLimit = 10
 
     public var isOneShot: Bool { oneShot == true }
-    public var tracksResult: Bool { track ?? !isOneShot }
+    /// 직접 입력이 `/` 로 시작하면 Claude 명령으로 보고 글 그대로 보낸다 — 같은 줄에 결과 명령을 붙일 수 없어 결과를 받지 않는다.
+    public var isCommand: Bool { task == nil && (prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
+    public var tracksResult: Bool { !isCommand && (track ?? !isOneShot) }
 
     public init(id: String, name: String, terminal: TerminalRef, cron: String, enabled: Bool = true,
                 task: String? = nil, prompt: String? = nil) {

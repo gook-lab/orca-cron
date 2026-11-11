@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 import SchedulerCore
 
-/// `OrcaCron preview <png> [list|collapsed|update|edit|new|send|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
+/// `OrcaCron preview <png> [list|collapsed|update|edit|new|send|command|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
 enum Preview {
     static func run(_ args: [String]) -> Never {
         guard let out = args.first else {
-            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|collapsed|update|edit|new|send|templates|template]\n".utf8))
+            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|collapsed|update|edit|new|send|command|templates|template]\n".utf8))
             exit(2)
         }
         let which = args.dropFirst().first ?? "list"
@@ -31,7 +31,10 @@ enum Preview {
                 screen = .list
             default: screen = .list
             }
-            let root = AnyView(MenuView(model: model, windowed: false, screen: screen))
+            let root = which == "command"
+                ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
+                                   text: "/zm-ml", done: {}).frame(width: 400))
+                : AnyView(MenuView(model: model, windowed: false, screen: screen))
             let host = NSHostingView(rootView: root.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),
                                   styleMask: [.borderless], backing: .buffered, defer: false)

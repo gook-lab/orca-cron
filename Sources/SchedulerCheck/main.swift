@@ -372,5 +372,65 @@ do {
     check(Engine.merge(before: before, after: after, current: current).schedules[0].blocked == "권한 확인 창에서 멈춤", "병합이 멈춤 표시를 옮김")
 }
 
+// MARK: Claude 명령 · 자동완성
+
+do {
+    let fm = CommandCatalog.frontmatter("---\nname: zm-ml-next\ndescription: \"다음 ML 번호\"\ndisable-model-invocation: true\n---\n본문")
+    check(fm["name"] == "zm-ml-next" && fm["description"] == "다음 ML 번호" && fm["disable-model-invocation"] == "true", "frontmatter 따옴표", "\(fm)")
+    let folded = CommandCatalog.frontmatter("---\ndescription: >\n  첫 줄\n  둘째 줄\nname: x\n---")
+    check(folded["description"] == "첫 줄 둘째 줄" && folded["name"] == "x", "frontmatter 여러 줄 설명", "\(folded)")
+    check(CommandCatalog.frontmatter("# 제목만").isEmpty, "frontmatter 없음")
+
+    check(CommandCatalog.trailingToken("/zm-ml") == "zm-ml", "줄 처음 / 조각")
+    check(CommandCatalog.trailingToken("먼저 /") == "", "공백 뒤 / 만")
+    check(CommandCatalog.trailingToken("a/b") == nil, "경로 중간 / 는 아님")
+    check(CommandCatalog.trailingToken("/zm next") == nil, "공백 지나면 끝")
+    check(CommandCatalog.complete("실행: /zm-ml", with: "zm-ml-next") == "실행: /zm-ml-next ", "조각을 이름으로 바꿈")
+
+    let list = [ClaudeCommand(name: "zm-ml-start", detail: "ML 점유", source: "프로젝트", modelInvocable: true),
+                ClaudeCommand(name: "review", detail: "리뷰", source: "내장", modelInvocable: false),
+                ClaudeCommand(name: "zm-ml-next", detail: "다음 번호", source: "프로젝트", modelInvocable: true),
+                ClaudeCommand(name: "kakaotalk:send", detail: "보내기", source: "플러그인", modelInvocable: true)]
+    check(CommandCatalog.match("zm-ml-n", in: list).map(\.name) == ["zm-ml-next"], "앞부분 맞춤")
+    check(CommandCatalog.match("번호", in: list).map(\.name) == ["zm-ml-next"], "설명으로 찾기")
+    check(CommandCatalog.match("send", in: list).map(\.name) == ["kakaotalk:send"], "플러그인 이름 뒷부분")
+    check(CommandCatalog.locked(in: "먼저 /review 를 하고 /zm-ml-next 를 실행", list: list).map(\.name) == ["review"], "템플릿 안 잠긴 명령 찾기")
+
+    // 폴더에서 읽기: 명령 · 스킬 · 숨긴 스킬 · 잠긴 스킬, 프로젝트가 개인보다 앞
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("orcacron-check-\(UUID().uuidString)")
+    let home = tmp.appendingPathComponent("home")
+    let proj = tmp.appendingPathComponent("proj")
+    func put(_ url: URL, _ text: String) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+    put(home.appendingPathComponent(".claude/commands/deploy.md"), "# 배포한다\n본문")
+    put(home.appendingPathComponent(".claude/skills/hidden/SKILL.md"), "---\nname: hidden\nuser-invocable: false\n---")
+    put(home.appendingPathComponent(".claude/skills/same/SKILL.md"), "---\nname: same\ndescription: 개인판\n---")
+    put(proj.appendingPathComponent(".claude/skills/same/SKILL.md"), "---\nname: same\ndescription: 프로젝트판\n---")
+    put(proj.appendingPathComponent(".claude/skills/lock/SKILL.md"), "---\nname: lock\ndisable-model-invocation: true\n---")
+    let loaded = CommandCatalog.load(projectDirs: [proj.path], home: home)
+    check(loaded.first { $0.name == "deploy" }?.detail == "배포한다", "개인 명령은 첫 줄을 설명으로")
+    check(!loaded.contains { $0.name == "hidden" }, "/ 메뉴에 안 나오는 스킬은 뺌")
+    check(loaded.first { $0.name == "same" }?.detail == "프로젝트판", "같은 이름이면 프로젝트 우선")
+    check(loaded.first { $0.name == "lock" }?.modelInvocable == false, "잠긴 스킬 표시")
+    check(loaded.contains { $0.name == "clear" && $0.source == "내장" }, "내장 명령 포함")
+    try? FileManager.default.removeItem(at: tmp)
+
+    // 명령으로 시작하는 직접 입력은 글 그대로, 결과를 기다리지 않는다
+    var cmd = Schedule(id: "c", name: "c", terminal: TerminalRef(handle: "term_a", label: "l"), cron: "0 9 * * *", prompt: "/zm-ml-next")
+    check(cmd.isCommand && !cmd.tracksResult, "명령은 결과 받기 없음")
+    check(Engine.message(for: cmd, runId: "r", config: config) == "/zm-ml-next", "명령은 글 그대로 보냄")
+    cmd.track = true
+    check(!cmd.tracksResult, "결과 받기를 켜도 명령은 안 받음")
+    let port = FakePort(terminals: [termA], idle: ["term_a"])
+    var store = StoreFile(schedules: [cmd])
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 8, 0))
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 0, 30), makeRunId: rid)
+    check(port.sent.first?.1 == "/zm-ml-next" && store.schedules[0].runId == nil && store.schedules[0].lastStatus == "보냄", "예약 명령 보냄 기록")
+    let task = Schedule(id: "t", name: "t", terminal: TerminalRef(handle: "h", label: "l"), cron: "0 9 * * *", task: "x", prompt: nil)
+    check(!task.isCommand && task.tracksResult, "템플릿은 명령 아님")
+}
+
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")
 exit(failures == 0 ? 0 : 1)

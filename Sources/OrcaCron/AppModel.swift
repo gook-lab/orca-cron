@@ -312,6 +312,28 @@ final class AppModel: ObservableObject {
         NSPasteboard.general.setString("\"\(allowRule)\"", forType: .string)
     }
 
+    // MARK: Claude 명령(자동완성)
+
+    private var commandCache: [String: (at: Date, list: [ClaudeCommand])] = [:]
+
+    /// 그 터미널의 작업 폴더 기준 명령 목록. 60초 동안 기억한다.
+    func commands(forTerminal handle: String) -> [ClaudeCommand] {
+        commands(projectDirs: terminals.first { $0.handle == handle }.map { [$0.worktreePath] } ?? [])
+    }
+
+    /// 템플릿은 어느 터미널로 갈지 모르므로 떠 있는 터미널들의 작업 폴더를 모두 본다.
+    var commandsForAnyTerminal: [ClaudeCommand] {
+        commands(projectDirs: Array(Set(terminals.map(\.worktreePath))).sorted())
+    }
+
+    func commands(projectDirs: [String]) -> [ClaudeCommand] {
+        let key = projectDirs.joined(separator: "|")
+        if let hit = commandCache[key], Date().timeIntervalSince(hit.at) < 60 { return hit.list }
+        let list = CommandCatalog.load(projectDirs: projectDirs)
+        commandCache[key] = (Date(), list)
+        return list
+    }
+
     func openFolder() { NSWorkspace.shared.open(paths.base) }
     func openLog() { NSWorkspace.shared.open(paths.log) }
 
