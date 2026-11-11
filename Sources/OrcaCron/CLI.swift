@@ -16,7 +16,7 @@ enum CLI {
         사용법:
           OrcaCron finish --run <run id> --status <성공|실패|건너뜀> --summary "<한 줄 요약>" [--link <URL>]
           OrcaCron status
-          OrcaCron preview <png 경로> [list|update|edit|new|send|templates|template]
+          OrcaCron preview <png 경로> [list|collapsed|update|edit|new|send|templates|template]
 
         """
         FileHandle.standardError.write(Data(text.utf8))

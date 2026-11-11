@@ -14,7 +14,7 @@ struct IconButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .padding(.horizontal, 5).padding(.vertical, 4)
+                .padding(.horizontal, 4).padding(.vertical, 3)
                 .foregroundStyle(enabled ? (hover ? Color.primary : Color.secondary) : Color.secondary.opacity(0.35))
                 .background(RoundedRectangle(cornerRadius: 6)
                     .fill(Color.primary.opacity(!enabled ? 0 : configuration.isPressed ? 0.16 : hover ? 0.09 : 0)))
@@ -35,7 +35,7 @@ struct HoverHighlight: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 5).padding(.vertical, 4)
+            .padding(.horizontal, 4).padding(.vertical, 3)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.09 : 0)))
             .onHover { hover = $0 }
             .animation(.easeOut(duration: 0.12), value: hover)
@@ -87,5 +87,24 @@ enum AboutPanel {
             .version: "",
             .credits: credits,
         ])
+    }
+}
+
+/// 예약 줄 켜기·끄기 — 시스템 스위치(mini)보다 작은 26×15 스위치.
+struct SmallSwitch: View {
+    @Binding var isOn: Bool
+    @State private var hover = false
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule().fill(isOn ? Color.accentColor : Color.primary.opacity(hover ? 0.28 : 0.2))
+                Circle().fill(.white).padding(2).shadow(color: .black.opacity(0.2), radius: 0.5, y: 0.5)
+            }
+            .frame(width: 26, height: 15)
+            .animation(.easeOut(duration: 0.12), value: isOn)
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }

@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 import SchedulerCore
 
-/// `OrcaCron preview <png> [list|update|edit|new|send|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
+/// `OrcaCron preview <png> [list|collapsed|update|edit|new|send|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
 enum Preview {
     static func run(_ args: [String]) -> Never {
         guard let out = args.first else {
-            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|update|edit|new|send|templates|template]\n".utf8))
+            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|collapsed|update|edit|new|send|templates|template]\n".utf8))
             exit(2)
         }
         let which = args.dropFirst().first ?? "list"
@@ -22,6 +22,10 @@ enum Preview {
             case "send": screen = .send(handle: first?.terminal.handle ?? "", task: nil)
             case "templates": screen = .templates
             case "template": screen = .template(key: model.tasks.first?.key)
+            case "collapsed":
+                UserDefaults.standard.set(model.groups.filter { !$0.schedules.isEmpty }.map(\.key).joined(separator: "\n"),
+                                          forKey: "collapsedGroups")
+                screen = .list
             case "update":
                 model.previewUpdate()
                 screen = .list

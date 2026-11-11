@@ -8,6 +8,16 @@ struct TerminalGroup: Identifiable {
     var live: TerminalInfo?
     var schedules: [Schedule]
     var id: String { handle }
+
+    /// 접힘 상태를 기억하는 키. Orca 를 다시 켜면 handle 이 바뀌므로 탭·패인 id 를 쓴다.
+    var key: String {
+        if let t = live, let tab = t.tabId, let leaf = t.leafId { return "\(tab):\(leaf)" }
+        if let r = schedules.first?.terminal, let tab = r.tabId, let leaf = r.leafId { return "\(tab):\(leaf)" }
+        return handle
+    }
+
+    /// 끝난 1회 보내기 — 목록에서는 「보낸 기록」으로 접는다.
+    static func isFinishedOneShot(_ s: Schedule) -> Bool { s.isOneShot && s.pendingSince == nil && s.runId == nil }
 }
 
 @MainActor
