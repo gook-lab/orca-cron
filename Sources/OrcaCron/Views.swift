@@ -7,34 +7,21 @@ enum Pad {
     static let form: CGFloat = 16
 }
 
-/// 떠 있는 앱을 다시 실행하면 창을 연다 — 메뉴 막대가 노치까지 차서 아이콘이 가려졌을 때 쓰는 길.
-/// Finder·`open` 은 reopen 이벤트로, 두 번째 프로세스는 분산 알림으로 들어온다(main.swift).
-enum WindowOpener {
-    static let notification = Notification.Name("lab.gook.orcacron.show")
-    @MainActor static var open: (() -> Void)?
-}
-
-/// 메뉴 막대 아이콘 자리. macOS 는 새로 켜진 앱의 아이콘을 맨 왼쪽에 놓아, 아이콘이 많은 노치 맥에선
-/// 앱을 다시 켤 때마다(업데이트 포함) 노치 뒤로 가려진다. 위치 기억 값이 없을 때만 오른쪽 끝에서 300pt
-/// (배터리 292 바로 왼쪽)를 넣는다. ⌘ 를 누른 채 아이콘을 끌어 옮기면 macOS 가 이 값을 바꾸고, 그 뒤로는 건드리지 않는다.
-enum MenuBarPlacement {
-    static let key = "NSStatusItem Preferred Position Item-0"
-    static let rightOffset = 300.0
-
-    static func apply(_ defaults: UserDefaults = .standard) {
-        if defaults.object(forKey: key) == nil { defaults.set(rightOffset, forKey: key) }
-    }
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DistributedNotificationCenter.default().addObserver(forName: WindowOpener.notification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { WindowOpener.open?() }
+        DistributedNotificationCenter.default().addObserver(forName: AppOpener.notification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppOpener.reveal() }
+        }
+        // 사람이 실행한 것이면 메뉴 막대 아이콘이 자리 잡은 뒤 패널을 연다.
+        if AppOpener.launchedByUser {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated { AppOpener.reveal() }
+            }
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        MainActor.assumeIsolated { WindowOpener.open?() }
+        MainActor.assumeIsolated { AppOpener.reveal() }
         return false
     }
 }
@@ -51,7 +38,7 @@ struct OrcaCronApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // 크기를 바꿔 쓰는 창. 메뉴의 「창으로 열기」나 앱 다시 실행으로 연다.
+        // 크기를 바꿔 쓰는 창. 메뉴의 「창으로 열기」로 열고, 아이콘이 노치에 가려졌을 때 앱을 실행해도 열린다.
         Window("OrcaCron", id: "main") {
             MenuView(model: model, windowed: true)
                 .frame(minWidth: 400, minHeight: 400)
@@ -80,7 +67,7 @@ struct MenuBarLabel: View {
     var body: some View {
         Image(nsImage: MenuBarLabel.icon(attention: model.needsAttention))
             .onAppear {
-                WindowOpener.open = {
+                AppOpener.openWindow = {
                     openWindow(id: "main")
                     NSApp.activate()
                 }
