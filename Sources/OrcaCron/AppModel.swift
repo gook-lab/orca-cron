@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import Foundation
 import SchedulerCore
 
@@ -38,6 +39,7 @@ final class AppModel: ObservableObject {
     private let port: OrcaCLI?
     private var timer: Timer?
     private var updateTimer: Timer?
+    private var sleepAssertion: IOPMAssertionID?
     private var ticking = false
     private var tickAgain = false
     private var loadFailed = false
@@ -65,6 +67,10 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.checkUpdate() }
             updateTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.checkUpdate() }
+            }
+            // `OrcaCron send`·`test` 가 inbox 에 요청을 남기면 바로 확인한다.
+            DistributedNotificationCenter.default().addObserver(forName: AppModel.inboxNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
             }
         }
         tick()
@@ -127,6 +133,14 @@ final class AppModel: ObservableObject {
 
     // MARK: 확인 주기
 
+    static let inboxNotification = Notification.Name("lab.gook.orcacron.inbox")
+    nonisolated static let quietKey = "quietSeconds"
+    /// 화면이 이만큼 조용해야 보낸다(⋯ 메뉴에서 1·3·5·10분).
+    nonisolated static var quietSeconds: Double {
+        let v = UserDefaults.standard.double(forKey: quietKey)
+        return v > 0 ? v : 60
+    }
+
     func tick() {
         guard let port else { return }
         guard !ticking else { tickAgain = true; return }
@@ -134,14 +148,17 @@ final class AppModel: ObservableObject {
         let before = store
         let paths = self.paths
         let sending = self.sending && !loadFailed
-        let config = EngineConfig(cliPath: cliPath, tasksDir: paths.tasks)
+        let config = EngineConfig(cliPath: cliPath, tasksDir: paths.tasks, quietTime: AppModel.quietSeconds)
+        let known = terminals
         Task.detached(priority: .utility) {
             let now = Date()
             var after = before
             var log: [String] = []
             let results = sending ? Store.readResults(paths) : []
+            let requests = sending ? Store.readRequests(paths) : []
             var listed: [TerminalInfo]?
             if sending {
+                log += Engine.ingest(requests.map(\.1), into: &after, known: known, now: now)
                 log += Engine.apply(results: results.map(\.1), to: &after)
                 let r = Engine.tick(&after, port: port, config: config, now: now)
                 log += r.log
@@ -156,8 +173,9 @@ final class AppModel: ObservableObject {
                     self.store = Engine.merge(before: before, after: finished, current: self.store)
                     self.notifyChanges(old: old, new: self.store)
                     self.persist()
-                    Store.removeResults(results.map(\.0))
+                    Store.removeResults(results.map(\.0) + requests.map(\.0))
                     Store.appendLog(lines, paths, now: now)
+                    self.updateSleepAssertion()
                 }
                 self.terminals = terms.filter { $0.agent == "claude" }
                 self.tasks = Store.listTasks(paths)
@@ -290,6 +308,10 @@ final class AppModel: ObservableObject {
     private func notifyChanges(old: StoreFile, new: StoreFile) {
         let level = Notifier.level
         guard level != .off else { return }
+        let now = Date()
+        if let w = Health.screenWarning(new, now: now), Health.screenWarning(old, now: now) == nil {
+            Notifier.post(title: "OrcaCron · 입력 칸을 못 찾음", body: w)
+        }
         for s in new.schedules {
             let o = old.schedules.first { $0.id == s.id }
             if let r = s.history.first, r.at != o?.history.first?.at {
@@ -334,6 +356,73 @@ final class AppModel: ObservableObject {
         return list
     }
 
+    // MARK: 잠자기 막기
+
+    /// 보낼 예약이 대기 중이거나 결과를 기다리는 동안(보낸 지 2시간 안) 맥이 저절로 잠들지 않게 한다.
+    /// 화면은 꺼질 수 있고, 덮개를 닫으면 막지 못한다.
+    private func updateSleepAssertion() {
+        let now = Date()
+        let busy = store.schedules.contains { s in
+            s.enabled && (s.pendingSince != nil || (s.runId != nil && now.timeIntervalSince(s.sentAt ?? .distantPast) < 7200))
+        }
+        if busy, sleepAssertion == nil {
+            var id: IOPMAssertionID = 0
+            let reason = "OrcaCron: scheduled task waiting or running" as CFString  // pmset 이 한글 이름을 빈칸으로 보여 영문
+            if IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                           IOPMAssertionLevel(kIOPMAssertionLevelOn), reason, &id) == kIOReturnSuccess {
+                sleepAssertion = id
+            }
+        } else if !busy, let id = sleepAssertion {
+            IOPMAssertionRelease(id)
+            sleepAssertion = nil
+        }
+    }
+
+    // MARK: 연결 시험 · 화면 진단
+
+    /// 받는 Claude 가 글을 받고 결과 명령까지 실행하는지 한 번 보낸다.
+    func sendTest(to handle: String) {
+        quickSend(to: handle, text: Engine.testPrompt, track: true)
+        if let i = store.schedules.lastIndex(where: { $0.isOneShot && $0.terminal.handle == handle }) {
+            store.schedules[i].name = "연결 시험"
+            persist()
+        }
+    }
+
+    var screenWarning: String? { Health.screenWarning(store, now: Date()) }
+
+    /// Claude 터미널마다 판정 결과와 화면 끝 15줄을 파일로 남기고 연다. 화면 내용이 그대로 들어가니 공유 전에 확인해야 한다.
+    func saveDiagnosis() {
+        guard let port else { return }
+        let terms = terminals
+        let base = paths.base
+        let quiet = Int(AppModel.quietSeconds)
+        Task.detached(priority: .utility) {
+            let f = DateFormatter()
+            f.dateFormat = "yyyyMMdd-HHmm"
+            var out = """
+            # OrcaCron 화면 진단 \(Date())
+            # 앱 \(Updater.version) (\(Updater.shortCommit)) · 조용한 시간 \(quiet)초
+            # ⚠ 아래에 터미널 화면 내용이 그대로 들어 있습니다. 공유하기 전에 지울 내용이 없는지 확인하세요.
+
+            """
+            for t in terms {
+                let tail = port.screenTail(t.handle)
+                out += """
+
+                ## \(t.displayName) (\(t.handle))
+                대기 상태: \(port.isIdle(t.handle) ? "idle" : "작업 중") · 입력 칸: \(promptState(screenTail: tail)) · 권한 창: \(permissionPrompt(screenTail: tail) ? "있음" : "없음")
+                --- 화면 끝 15줄 ---
+                \(tail.suffix(15).joined(separator: "\n"))
+
+                """
+            }
+            let url = base.appendingPathComponent("diagnose-\(f.string(from: Date())).txt")
+            try? out.write(to: url, atomically: true, encoding: .utf8)
+            await MainActor.run { _ = NSWorkspace.shared.open(url) }
+        }
+    }
+
     func openFolder() { NSWorkspace.shared.open(paths.base) }
     func openLog() { NSWorkspace.shared.open(paths.log) }
 
@@ -369,7 +458,7 @@ final class AppModel: ObservableObject {
     }
 
     var needsAttention: Bool {
-        store.schedules.contains {
+        screenWarning != nil || store.schedules.contains {
             $0.waitNote != nil || $0.blocked != nil || ($0.enabled && ["실패", "결과 없음"].contains($0.lastStatus ?? ""))
         }
     }

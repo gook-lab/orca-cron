@@ -152,6 +152,7 @@ struct ListView: View {
     @AppStorage("showAllIdleTerminals") private var showAllIdle = false
     @AppStorage("hideIdleTerminals") private var hideIdle = false
     @AppStorage(Notifier.levelKey) private var notifyLevel = NotifyLevel.problems.rawValue
+    @AppStorage(AppModel.quietKey) private var quietSeconds = 60.0
     /// 접어 둔 터미널 묶음(키를 줄바꿈으로 이은 것).
     @AppStorage("collapsedGroups") private var collapsedRaw = ""
 
@@ -191,6 +192,11 @@ struct ListView: View {
 
             if let p = model.problem {
                 Text(p).font(.caption).foregroundStyle(.red)
+                    .padding(.horizontal, Pad.h).padding(.bottom, 8)
+            }
+            if let w = model.screenWarning {
+                Text(w).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Pad.h).padding(.bottom, 8)
             }
 
@@ -250,8 +256,17 @@ struct ListView: View {
                     Picker("알림", selection: $notifyLevel) {
                         ForEach(NotifyLevel.allCases) { Text($0.label).tag($0.rawValue) }
                     }
+                    Picker("조용한 시간", selection: $quietSeconds) {
+                        Text("1분 (기본)").tag(60.0)
+                        Text("3분").tag(180.0)
+                        Text("5분").tag(300.0)
+                        Text("10분").tag(600.0)
+                    }
+                    .help("터미널 화면이 이만큼 움직이지 않아야 보냅니다. 입력 칸에 글을 써 두고 자리를 비우는 일이 잦으면 늘리세요")
                     Button("결과 명령 허용 규칙 복사") { model.copyAllowRule() }
                         .help("받는 Claude Code 의 ~/.claude/settings.json permissions.allow 에 붙여 넣으면 결과 명령을 묻지 않습니다")
+                    Button("화면 진단 저장") { model.saveDiagnosis() }
+                        .help("터미널마다 판정 결과와 화면 끝 15줄을 파일로 남깁니다(화면 내용이 들어가니 공유 전에 확인)")
                     Divider()
                     Button("터미널 묶음 모두 접기") { setCollapsed(Set(model.groups.filter { !$0.schedules.isEmpty }.map(\.key))) }
                     Button("모두 펼치기") { setCollapsed([]) }
@@ -287,7 +302,8 @@ struct ListView: View {
     func groupHeader(_ g: TerminalGroup, collapsed: Bool = false, onToggle: (() -> Void)? = nil) -> some View {
         GroupHeader(group: g, collapsed: collapsed, onToggle: onToggle,
                     onSend: g.live == nil ? nil : { go(.send(handle: g.handle, task: nil)) },
-                    onAdd: g.live == nil ? nil : { go(.edit(model.newDraft(terminal: g.handle), isNew: true)) })
+                    onAdd: g.live == nil ? nil : { go(.edit(model.newDraft(terminal: g.handle), isNew: true)) },
+                    onTest: g.live == nil ? nil : { model.sendTest(to: g.handle) })
     }
 
     /// 예약 없는 터미널 — 처음 4개만, 「더 보기」로 전부.
@@ -399,6 +415,7 @@ struct GroupHeader: View {
     var onToggle: (() -> Void)?
     let onSend: (() -> Void)?
     let onAdd: (() -> Void)?
+    var onTest: (() -> Void)?
 
     var body: some View {
         let empty = group.schedules.isEmpty
@@ -426,6 +443,11 @@ struct GroupHeader: View {
             .contentShape(Rectangle())
             .onTapGesture { onToggle?() }
             .help(onToggle == nil ? "" : collapsed ? "펼치기" : "접기")
+            .contextMenu {
+                if let onTest {
+                    Button("연결 시험 보내기", action: onTest)
+                }
+            }
             if let onSend {
                 Button(action: onSend) { Image(systemName: "paperplane") }.help("이 터미널에 지금 보내기")
             }
@@ -842,6 +864,23 @@ enum TimeMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// 「하루 여러 번」의 시각 한 칸.
+struct TimeSlot: Identifiable {
+    let id = UUID()
+    var date: Date
+}
+
+/// 저장된 cron 을 편집 칸으로 되돌린 값.
+struct TimeFill {
+    var mode: TimeMode = .cron
+    var hour = 9
+    var minute = 0
+    var days: Set<Int> = [1]
+    var times: [(h: Int, m: Int)] = [(9, 0), (18, 0)]
+    var weekdaysOnly = false
+    var every = 30
+}
+
 struct EditView: View {
     @ObservedObject var model: AppModel
     @State private var draft: Schedule
@@ -852,9 +891,9 @@ struct EditView: View {
     @State private var mode: TimeMode
     @State private var time: Date
     @State private var days: Set<Int>
-    @State private var hoursText: String
+    @State private var times: [TimeSlot]
+    @State private var multiWeekdays: Bool
     @State private var every: Int
-    @State private var minuteOfHour: Int
     @State private var cronText: String
 
     init(model: AppModel, draft: Schedule, isNew: Bool, go: @escaping (Screen) -> Void) {
@@ -864,36 +903,56 @@ struct EditView: View {
         _draft = State(initialValue: draft)
         _useTemplate = State(initialValue: draft.prompt == nil)
         _cronText = State(initialValue: draft.cron)
-        let f = EditView.fill(from: isNew ? "0 9 * * *" : draft.cron)
+        let f = EditView.fill(from: draft.cron.isEmpty ? "0 9 * * *" : draft.cron)
         _mode = State(initialValue: f.mode)
         _time = State(initialValue: Calendar.current.date(bySettingHour: f.hour, minute: f.minute, second: 0, of: Date()) ?? Date())
         _days = State(initialValue: f.days)
-        _hoursText = State(initialValue: f.hours)
+        _times = State(initialValue: f.times.map { TimeSlot(date: EditView.clock($0.h, $0.m)) })
+        _multiWeekdays = State(initialValue: f.weekdaysOnly)
         _every = State(initialValue: f.every)
-        _minuteOfHour = State(initialValue: f.minute)
+    }
+
+    static func clock(_ h: Int, _ m: Int) -> Date {
+        Calendar.current.date(bySettingHour: h, minute: m, second: 0, of: Date()) ?? Date()
+    }
+
+    static func hm(_ d: Date) -> (h: Int, m: Int) {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+        return (c.hour ?? 9, c.minute ?? 0)
     }
 
     /// 흔한 cron 모양이면 그 칸으로 연다. 아니면 「cron 직접」.
-    static func fill(from cron: String) -> (mode: TimeMode, hour: Int, minute: Int, days: Set<Int>, hours: String, every: Int) {
-        let p = cron.split(separator: " ").map(String.init)
-        var out: (mode: TimeMode, hour: Int, minute: Int, days: Set<Int>, hours: String, every: Int) = (.cron, 9, 0, [1], "12,19", 30)
-        guard p.count == 5, p[2] == "*", p[3] == "*" else { return out }
+    static func fill(from cron: String) -> TimeFill {
+        var out = TimeFill()
+        let pieces = cron.split(separator: ";").map { $0.split(separator: " ").map(String.init) }
+        guard !pieces.isEmpty, pieces.allSatisfy({ $0.count == 5 && $0[2] == "*" && $0[3] == "*" }) else { return out }
+        // 하루 여러 번: 식 여럿, 또는 시가 여럿 — 요일 칸이 모두 같고 매일·평일일 때.
+        let dow = pieces[0][4]
+        var pairs: [(h: Int, m: Int)] = []
+        for p in pieces {
+            guard let m = Int(p[0]), p[4] == dow else { pairs = []; break }
+            let hs = p[1].split(separator: ",")
+            let hours = hs.compactMap { Int($0) }
+            guard !hours.isEmpty, hours.count == hs.count else { pairs = []; break }
+            pairs += hours.map { (h: $0, m: m) }
+        }
+        if pairs.count > 1, dow == "*" || dow == "1-5" {
+            out.mode = .multi
+            out.times = pairs.sorted { ($0.h, $0.m) < ($1.h, $1.m) }
+            out.weekdaysOnly = dow == "1-5"
+            (out.hour, out.minute) = out.times[0]
+            return out
+        }
+        guard pieces.count == 1 else { return out }
+        let p = pieces[0]
         if p[1] == "*", p[4] == "*", p[0].hasPrefix("*/"), let n = Int(p[0].dropFirst(2)) {
             out.mode = .every
             out.every = n
             return out
         }
-        guard let m = Int(p[0]) else { return out }
-        out.minute = m
-        let parts = p[1].split(separator: ",")
-        let hours = parts.compactMap { Int($0) }
-        guard !hours.isEmpty, hours.count == parts.count else { return out }
-        out.hour = hours[0]
-        out.hours = p[1]
-        if hours.count > 1 {
-            if p[4] == "*" { out.mode = .multi }
-            return out
-        }
+        guard pairs.count == 1 else { return out }
+        (out.hour, out.minute) = pairs[0]
+        out.times = [pairs[0], ((pairs[0].h + 9) % 24, pairs[0].m)]
         if p[4] == "*" {
             out.mode = .daily
         } else if p[4] == "1-5" {
@@ -909,6 +968,20 @@ struct EditView: View {
         return out
     }
 
+    /// 시각 목록 → cron. 분이 같은 시각은 한 식에 모으고, 분이 다르면 `;` 로 잇는다.
+    static func multiCron(_ times: [Date], weekdaysOnly: Bool) -> String {
+        let dow = weekdaysOnly ? "1-5" : "*"
+        var byMinute: [Int: Set<Int>] = [:]
+        for t in times {
+            let (h, m) = hm(t)
+            byMinute[m, default: []].insert(h)
+        }
+        return byMinute.map { (m: $0.key, hours: $0.value.sorted()) }
+            .sorted { ($0.hours[0], $0.m) < ($1.hours[0], $1.m) }
+            .map { "\($0.m) \($0.hours.map(String.init).joined(separator: ",")) * * \(dow)" }
+            .joined(separator: "; ")
+    }
+
     var hm: (Int, Int) {
         let c = Calendar.current.dateComponents([.hour, .minute], from: time)
         return (c.hour ?? 9, c.minute ?? 0)
@@ -920,7 +993,7 @@ struct EditView: View {
         case .daily: return "\(m) \(h) * * *"
         case .weekdays: return "\(m) \(h) * * 1-5"
         case .weekly: return "\(m) \(h) * * \(days.isEmpty ? "1" : days.sorted().map(String.init).joined(separator: ","))"
-        case .multi: return "\(minuteOfHour) \(hoursText.replacingOccurrences(of: " ", with: "")) * * *"
+        case .multi: return EditView.multiCron(times.map(\.date), weekdaysOnly: multiWeekdays)
         case .every: return "*/\(every) * * * *"
         case .cron: return cronText.trimmingCharacters(in: .whitespaces)
         }
@@ -987,6 +1060,14 @@ struct EditView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                FormRow(title: "새 대화") {
+                    Toggle("보내기 전에 대화 비우기(/clear)", isOn: Binding(get: { draft.clearFirst == true },
+                                                                       set: { draft.clearFirst = $0 ? true : nil }))
+                        .toggleStyle(.checkbox)
+                    Text("매번 빈 대화에서 시작해 맥락이 쌓이지 않습니다. 그 터미널의 지금 대화가 지워지니 예약 전용 터미널에만 켜세요.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             FormFooter(primary: "저장", enabled: valid, cancel: { go(.list) }, submit: save)
@@ -994,6 +1075,13 @@ struct EditView: View {
         .padding(Pad.form)
         .onChange(of: draft.terminal.handle) { _, new in
             if let t = model.terminals.first(where: { $0.handle == new }) { draft.terminal = t.ref }
+        }
+        .onChange(of: mode) { old, new in
+            // 「매일 09:30」에서 「하루 여러 번」으로 바꾸면 09:30 을 첫 칸으로 둔다.
+            guard new == .multi, [.daily, .weekdays].contains(old) else { return }
+            multiWeekdays = old == .weekdays
+            let now = EditView.hm(time)
+            if !times.contains(where: { EditView.hm($0.date) == now }), !times.isEmpty { times[0].date = time }
         }
         .onChange(of: draft.task) { _, new in
             // 이름이 비었거나 템플릿 제목을 그대로 쓰던 중이면 새 템플릿 제목으로 바꾼다.
@@ -1026,12 +1114,31 @@ struct EditView: View {
                 }
             }
         case .multi:
-            HStack(spacing: 6) {
-                modePicker
-                TextField("12,19", text: $hoursText).textFieldStyle(.roundedBorder).frame(width: 96)
-                Text("시").foregroundStyle(.secondary)
-                TextField("0", value: $minuteOfHour, format: .number).textFieldStyle(.roundedBorder).frame(width: 44)
-                Text("분").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    modePicker
+                    Picker("", selection: $multiWeekdays) {
+                        Text("매일").tag(false)
+                        Text("평일").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                FlowRow(spacing: 10) {
+                    ForEach($times) { $slot in
+                        HStack(spacing: 2) {
+                            clockField($slot.date)
+                            Button {
+                                times.removeAll { $0.id == slot.id }
+                            } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.icon)
+                            .disabled(times.count <= 1)
+                            .help("이 시각 빼기")
+                        }
+                    }
+                    Button(action: addTime) { Label("추가", systemImage: "plus") }
+                        .buttonStyle(.icon).font(.caption)
+                        .help("시각 하나 더하기")
+                }
             }
         case .every:
             HStack(spacing: 6) {
@@ -1049,12 +1156,27 @@ struct EditView: View {
         }
     }
 
-    var timeField: some View {
-        DatePicker("", selection: $time, displayedComponents: .hourAndMinute)
+    var timeField: some View { clockField($time) }
+
+    func clockField(_ value: Binding<Date>) -> some View {
+        DatePicker("", selection: value, displayedComponents: .hourAndMinute)
             .labelsHidden()
             .datePickerStyle(.field)
             .environment(\.locale, Locale(identifier: "en_GB"))  // 24시간 표기
             .fixedSize()
+    }
+
+    /// 마지막 시각에서 한 시간씩 뒤로 가며 아직 없는 시각을 더한다.
+    func addTime() {
+        let taken = Set(times.map { EditView.hm($0.date) }.map { $0.h * 60 + $0.m })
+        let (h, m) = EditView.hm(times.last?.date ?? time)
+        for step in 1...24 {
+            let nh = (h + step) % 24
+            if !taken.contains(nh * 60 + m) {
+                times.append(TimeSlot(date: EditView.clock(nh, m)))
+                return
+            }
+        }
     }
 
     var dayButtons: some View {
@@ -1120,6 +1242,13 @@ struct SendView: View {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
                 FormRow(title: "터미널") {
                     TerminalPicker(model: model, handle: $handle)
+                    Button {
+                        model.sendTest(to: handle)
+                        done()
+                    } label: { Label("연결 시험 보내기", systemImage: "checkmark.seal") }
+                    .buttonStyle(.icon).font(.caption)
+                    .disabled(handle.isEmpty)
+                    .help("받는 Claude 가 글을 받고 결과 명령까지 실행하는지 한 번 확인합니다. 결과는 목록에 「연결 시험」으로 남습니다")
                 }
                 FormRow(title: "내용") {
                     Picker("", selection: $useTemplate) {
@@ -1145,7 +1274,7 @@ struct SendView: View {
                 }
             }
 
-            Text("터미널이 입력을 기다리고 60초 조용할 때 들어갑니다. 바쁘면 최대 60분 기다립니다.")
+            Text("터미널이 입력을 기다리고 \(Engine.durationText(AppModel.quietSeconds)) 조용할 때 들어갑니다. 바쁘면 최대 60분 기다립니다.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

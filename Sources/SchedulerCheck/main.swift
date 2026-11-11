@@ -143,7 +143,7 @@ do {
     var store = StoreFile(schedules: [schedule("q", cron: "0 23 * * *")])
     store.schedules[0].runNowRequestedAt = at(2026, 11, 11, 9, 0)
     _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 1), makeRunId: rid)
-    check(port.sent.isEmpty && store.schedules[0].waitNote?.hasPrefix("화면이 60초 안에") == true, "최근 출력 → 대기")
+    check(port.sent.isEmpty && store.schedules[0].waitNote?.hasPrefix("화면이 1분 안에") == true, "최근 출력 → 대기")
     _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 1, 41), makeRunId: rid)
     check(port.sent.count == 1, "60초 조용하면 보냄")
 }
@@ -430,6 +430,78 @@ do {
     check(port.sent.first?.1 == "/zm-ml-next" && store.schedules[0].runId == nil && store.schedules[0].lastStatus == "보냄", "예약 명령 보냄 기록")
     let task = Schedule(id: "t", name: "t", terminal: TerminalRef(handle: "h", label: "l"), cron: "0 9 * * *", task: "x", prompt: nil)
     check(!task.isCommand && task.tracksResult, "템플릿은 명령 아님")
+}
+
+// MARK: 하루 여러 번 — 분이 다른 시각
+do {
+    let c = Cron("30 9 * * *;0 18 * * *")
+    check(c?.expression == "30 9 * * *; 0 18 * * *", "여러 식은 「; 」로 정리")
+    check(c?.summary == "매일 09:30 · 18:00", "여러 식 요약은 시각을 모음", c?.summary ?? "nil")
+    check(next("30 9 * * *; 0 18 * * *", at(2026, 11, 11, 10, 0)) == at(2026, 11, 11, 18, 0), "가장 이른 다음 시각")
+    check(next("30 9 * * *; 0 18 * * *", at(2026, 11, 11, 18, 0)) == at(2026, 11, 12, 9, 30), "다음 날 첫 시각")
+    check(Cron("0 9,13 * * 1-5; 30 18 * * 1-5")?.summary == "평일 09:00 · 13:00 · 18:30", "평일 여러 시각 요약")
+    check(Cron("30 9 * * *; 61 18 * * *") == nil, "식 하나라도 틀리면 거절")
+    check(Cron("0 9 * * 1; 0 18 * * *")?.summary == "매주 월 09:00 / 매일 18:00", "요일이 다르면 따로 씀")
+}
+
+// MARK: 입력 칸 판정 — 글자·가로줄 변형
+do {
+    let heavy = String(repeating: "━", count: 30)
+    check(promptState(screenTail: [heavy, "❯ ", heavy]) == .empty, "굵은 가로줄도 입력 칸")
+    check(promptState(screenTail: [rule, "› ", rule]) == .empty, "› 표시도 입력 칸")
+    check(promptState(screenTail: [rule, "> 쓰는 중", rule]) == .typing, "> 표시 + 글은 입력 중")
+    check(promptState(screenTail: ["  > 인용한 줄", "끝"]) == .unknown, "가로줄 없는 > 는 입력 칸 아님")
+    check(promptState(screenTail: ["─────", "❯ "]) == .unknown, "짧은 줄은 가로줄 아님")
+    check(promptState(screenTail: [rule, "❯ ", "> 인용"]) == .empty, "가로줄 없는 > 는 건너뛰고 위 입력 칸을 찾음")
+}
+
+// MARK: 화면이 바뀐 것 같음 경고
+do {
+    var s = schedule("w", cron: "0 9 * * *")
+    let now = at(2026, 11, 11, 12, 0)
+    s.history = [RunRecord(at: at(2026, 11, 11, 10, 0), status: "건너뜀", summary: "60분 기다렸지만 입력 칸이 보이지 않음(질문·권한 창)")]
+    check(Health.screenWarning(StoreFile(schedules: [s]), now: now) == nil, "한 번은 경고 안 함")
+    var s2 = schedule("w2", cron: "0 9 * * *")
+    s2.history = [RunRecord(at: at(2026, 11, 11, 11, 0), status: "건너뜀", summary: "입력 칸이 보이지 않음")]
+    check(Health.screenWarning(StoreFile(schedules: [s, s2]), now: now) != nil, "24시간에 두 번이면 경고")
+    check(Health.screenWarning(StoreFile(schedules: [s, s2]), now: at(2026, 11, 12, 11, 30)) == nil, "하루 지나면 경고 없음")
+}
+
+// MARK: 명령줄 요청(inbox)
+do {
+    var store = StoreFile(schedules: [])
+    let r = SendRequest(id: "ab12", terminal: "term_a", text: "안녕", task: nil, track: true, name: nil, at: at(2026, 11, 11, 9, 0))
+    _ = Engine.ingest([r], into: &store, known: [termA], now: at(2026, 11, 11, 9, 0))
+    let s = store.schedules.first
+    check(s?.id == "once-ab12" && s?.isOneShot == true && s?.pendingSince != nil && s?.tracksResult == true, "요청은 결과 받는 1회 보내기")
+    check(s?.terminal.label == termA.ref.label && s?.name == "안녕", "터미널 이름·글 첫 줄을 씀")
+    _ = Engine.ingest([r], into: &store, known: [termA], now: at(2026, 11, 11, 9, 1))
+    check(store.schedules.count == 1, "같은 요청은 한 번만")
+
+    // 확인 도중 사용자가 바꾼 목록에 실행기가 더한 것을 붙인다
+    let before = StoreFile(schedules: [schedule("a", cron: "0 9 * * *")])
+    var after = before
+    after.schedules.append(store.schedules[0])
+    var current = before
+    current.schedules.append(schedule("b", cron: "0 10 * * *"))
+    let merged = Engine.merge(before: before, after: after, current: current)
+    check(merged.schedules.map(\.id) == ["a", "b", "once-ab12"], "합칠 때 새 요청을 붙임", merged.schedules.map(\.id).joined(separator: ","))
+}
+
+// MARK: 보내기 전 대화 비우기
+do {
+    let port = FakePort(terminals: [termA], idle: ["term_a"])
+    var s = schedule("c", cron: "0 9 * * *")
+    s.clearFirst = true
+    var store = StoreFile(schedules: [s])
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 8, 0))
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 0, 30), makeRunId: rid)
+    check(port.sent.map(\.1) == ["/clear"] && store.schedules[0].pendingSince != nil, "먼저 /clear 만 보냄")
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 1), makeRunId: rid)
+    check(port.sent.count == 2 && port.sent[1].1.contains("daily-report") && store.schedules[0].runId != nil, "다음 확인에 본문을 보냄")
+    check(store.schedules[0].clearedFor == nil, "보낸 뒤 비우기 표시 지움")
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 2), makeRunId: rid)
+    check(port.sent.count == 2, "같은 실행에 /clear 를 다시 보내지 않음")
 }
 
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")

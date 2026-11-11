@@ -19,10 +19,11 @@ public struct Paths: Sendable {
     public var schedules: URL { base.appendingPathComponent("schedules.json") }
     public var tasks: URL { base.appendingPathComponent("tasks", isDirectory: true) }
     public var results: URL { base.appendingPathComponent("results", isDirectory: true) }
+    public var inbox: URL { base.appendingPathComponent("inbox", isDirectory: true) }
     public var log: URL { base.appendingPathComponent("log.txt") }
 
     public func ensure() throws {
-        for dir in [base, tasks, results] {
+        for dir in [base, tasks, results, inbox] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
@@ -64,6 +65,20 @@ public enum Store {
                   let r = try? decoder().decode(RunResult.self, from: data) else { return nil }
             return (url, r)
         }
+    }
+
+    public static func writeRequest(_ r: SendRequest, _ paths: Paths) throws {
+        try encoder().encode(r).write(to: paths.inbox.appendingPathComponent("\(r.id).json"), options: .atomic)
+    }
+
+    public static func readRequests(_ paths: Paths) -> [(URL, SendRequest)] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: paths.inbox, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }.compactMap { url in
+            guard let data = try? Data(contentsOf: url),
+                  let r = try? decoder().decode(SendRequest.self, from: data) else { return nil }
+            return (url, r)
+        }
+        .sorted { $0.1.at < $1.1.at }
     }
 
     public static func removeResults(_ urls: [URL]) {

@@ -19,6 +19,11 @@ enum Preview {
             switch which {
             case "edit": screen = first.map { .edit($0, isNew: false) } ?? .list
             case "new": screen = .edit(model.newDraft(), isNew: true)
+            case "multi":
+                var d = model.newDraft()
+                d.name = "하루 두 번 점검"
+                d.cron = "30 9 * * 1-5; 0 18 * * 1-5"
+                screen = .edit(d, isNew: true)
             case "send": screen = .send(handle: first?.terminal.handle ?? "", task: nil)
             case "templates": screen = .templates
             case "template": screen = .template(key: model.tasks.first?.key)

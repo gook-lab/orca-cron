@@ -47,6 +47,8 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
     public var track: Bool?
     /// 예정 시각보다 이만큼(초) 넘게 늦으면 보내지 않고 건너뛴다(맥 잠자기·앱 꺼짐). 없으면 늦어도 보낸다.
     public var lateLimit: Double?
+    /// 보내기 전에 `/clear` 를 먼저 보내 새 대화로 시작한다(예약 전용 터미널용).
+    public var clearFirst: Bool?
 
     // 실행기가 채우는 칸
     public var nextRunAt: Date?
@@ -58,6 +60,8 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
     public var waitNote: String?
     /// 보낸 뒤 결과를 기다리는 동안 터미널이 멈춰 보이는 이유(권한 창 등). 결과가 오면 지운다.
     public var blocked: String?
+    /// 이번 대기(pendingSince)에 이미 /clear 를 보냈는지.
+    public var clearedFor: Date?
     public var runId: String?
     public var sentAt: Date?
     public var lastRunAt: Date?
@@ -97,6 +101,7 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
         pendingSince = nil
         pendingReason = nil
         waitNote = nil
+        clearedFor = nil
     }
 }
 
@@ -125,6 +130,27 @@ public struct RunResult: Codable, Equatable, Sendable {
     }
 
     public static let allowedStatuses = ["성공", "실패", "건너뜀"]
+}
+
+/// `OrcaCron send`·`test` 가 inbox/ 에 남기는 보내기 요청. 앱이 다음 확인 때 1회 보내기로 바꾼다.
+public struct SendRequest: Codable, Equatable, Sendable {
+    public var id: String
+    public var terminal: String
+    public var text: String?
+    public var task: String?
+    public var track: Bool
+    public var name: String?
+    public var at: Date
+
+    public init(id: String, terminal: String, text: String?, task: String?, track: Bool, name: String?, at: Date) {
+        self.id = id
+        self.terminal = terminal
+        self.text = text
+        self.task = task
+        self.track = track
+        self.name = name
+        self.at = at
+    }
 }
 
 public struct TaskFile: Identifiable, Equatable, Sendable {

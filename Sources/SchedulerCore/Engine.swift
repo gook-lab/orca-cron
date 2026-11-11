@@ -22,6 +22,30 @@ public struct EngineConfig: Sendable {
 }
 
 public enum Engine {
+    /// 「연결 시험」으로 보내는 글 — 받는 Claude 가 결과 명령까지 실행하는지 본다.
+    public static let testPrompt = "OrcaCron 연결 시험입니다. 아무 도구도 쓰지 말고, 아래 결과 명령 하나만 상태 성공 · 요약 「연결 시험 통과」로 실행해 주세요."
+
+    /// inbox 요청을 1회 보내기로 바꾼다. known 은 앱이 마지막으로 읽은 터미널 목록(이름 표시용).
+    public static func ingest(_ requests: [SendRequest], into store: inout StoreFile, known: [TerminalInfo], now: Date) -> [String] {
+        var log: [String] = []
+        for r in requests where !store.schedules.contains(where: { $0.id == "once-" + r.id }) {
+            let ref = known.first { $0.handle == r.terminal }?.ref ?? TerminalRef(handle: r.terminal, label: r.terminal)
+            let body = (r.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let firstLine = body.split(separator: "\n").first.map(String.init) ?? body
+            var s = Schedule(id: "once-" + r.id,
+                             name: r.name ?? r.task ?? (firstLine.count > 40 ? String(firstLine.prefix(40)) + "…" : firstLine),
+                             terminal: ref, cron: "", task: r.task, prompt: r.task == nil ? body : nil)
+            s.oneShot = true
+            s.track = r.track
+            s.runNowRequestedAt = now
+            s.pendingSince = now
+            s.pendingReason = "지금 실행"
+            store.schedules.append(s)
+            log.append("\(s.name): 명령줄 요청 받음 → \(ref.label)")
+        }
+        return log
+    }
+
     /// 결과 파일을 해당 실행(runId)에 붙인다.
     public static func apply(results: [RunResult], to store: inout StoreFile) -> [String] {
         var log: [String] = []
@@ -132,7 +156,7 @@ public enum Engine {
             }
             if usedHandles.contains(t.handle) { s.waitNote = "같은 터미널에 다른 예약을 막 보내 다음 확인 때 보냄"; continue }
             if let last = t.lastOutputAt, now.timeIntervalSince(last) < config.quietTime {
-                waitOrGiveUp("화면이 \(Int(config.quietTime))초 안에 움직임(작업 중이거나 입력 중)")
+                waitOrGiveUp("화면이 \(duration(config.quietTime)) 안에 움직임(작업 중이거나 입력 중)")
                 continue
             }
             guard port.isIdle(t.handle) else { waitOrGiveUp("터미널이 작업 중"); continue }
@@ -142,6 +166,21 @@ public enum Engine {
             case .typing: waitOrGiveUp("입력 칸에 쓰던 글이 있음"); continue
             case .unknown:
                 waitOrGiveUp(permissionPrompt(screenTail: tail) ? "권한 확인 창이 떠 있음" : "입력 칸이 보이지 않음(질문·선택 창이 떠 있을 수 있음)")
+                continue
+            }
+
+            // 새 대화로 시작 — /clear 를 먼저 보내고, 화면이 다시 조용해지면(다음 확인) 본문을 보낸다.
+            if s.clearFirst == true, s.clearedFor != s.pendingSince {
+                usedHandles.insert(t.handle)
+                if case .failed(let why) = port.send(t.handle, text: "/clear") {
+                    s.record(RunRecord(at: now, status: "실패", summary: "대화 비우기(/clear) 실패: \(why)"))
+                    s.clearPending()
+                    log.append("\(s.name): /clear 실패 — \(why)")
+                } else {
+                    s.clearedFor = s.pendingSince
+                    s.waitNote = "대화를 비웠음(/clear) — 화면이 조용해지면 보냄"
+                    log.append("\(s.name): 대화 비움(/clear) → \(t.displayName)")
+                }
                 continue
             }
 
@@ -220,9 +259,12 @@ public enum Engine {
         return f.string(from: d)
     }
 
+    public static func durationText(_ t: TimeInterval) -> String { duration(t) }
+
     static func duration(_ t: TimeInterval) -> String {
+        if t < 60 { return "\(Int(t))초" }
         let m = Int(t / 60)
-        return m >= 60 ? "\(m / 60)시간" + (m % 60 > 0 ? " \(m % 60)분" : "") : "\(max(m, 1))분"
+        return m >= 60 ? "\(m / 60)시간" + (m % 60 > 0 ? " \(m % 60)분" : "") : "\(m)분"
     }
 
     /// 예약이 가리키는 터미널을 지금 목록에 맞춘다.
@@ -265,6 +307,9 @@ public enum Engine {
         // 실행기가 지운 예약(끝난 1회 보내기)은 지금 목록에서도 지운다.
         let removed = Set(before.schedules.map(\.id)).subtracting(after.schedules.map(\.id))
         out.schedules.removeAll { removed.contains($0.id) }
+        // 실행기가 더한 것(명령줄 요청)은 붙인다.
+        let known = Set(before.schedules.map(\.id)).union(current.schedules.map(\.id))
+        out.schedules += after.schedules.filter { !known.contains($0.id) }
         for i in out.schedules.indices {
             let id = out.schedules[i].id
             guard let a = after.schedules.first(where: { $0.id == id }) else { continue }
@@ -283,6 +328,7 @@ public enum Engine {
             s.lastLink = a.lastLink
             s.history = a.history
             s.blocked = a.blocked
+            s.clearedFor = a.clearedFor
             s.runNowHandledAt = a.runNowHandledAt
             if a.runId != b?.runId || (a.pendingSince == nil && b?.pendingSince != nil) {
                 s.clearPending()

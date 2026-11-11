@@ -62,14 +62,29 @@ public func promptState(screenTail lines: [String]) -> PromptState {
     guard lines.count >= 2 else { return .unknown }
     for i in stride(from: lines.count - 1, through: 1, by: -1) {
         let line = lines[i].trimmingCharacters(in: .whitespaces)
-        guard line.hasPrefix("❯") else { continue }
-        guard lines[i - 1].trimmingCharacters(in: .whitespaces).hasPrefix("─") else { return .unknown }
+        guard let mark = line.first, promptMarks.contains(mark) else { continue }
+        guard isRule(lines[i - 1]) else {
+            // `>` 는 출력(인용 등)에도 흔해 가로줄 아래가 아니면 넘어간다. `❯`·`›` 는 질문·권한 창의 선택 표시다.
+            if mark == ">" { continue }
+            return .unknown
+        }
         let rest = String(line.dropFirst())
         if rest.hasPrefix("\u{a0}") { return .empty }
         let typed = rest.components(separatedBy: "   ").first?.trimmingCharacters(in: .whitespaces) ?? ""
         return typed.isEmpty ? .empty : .typing
     }
     return .unknown
+}
+
+/// 입력 칸 앞 표시 — Claude Code 는 `❯`. 글꼴·버전에 따라 `›`·`>` 로 그려질 수 있어 함께 받는다.
+let promptMarks: [Character] = ["❯", "›", ">"]
+
+/// 입력 칸 위의 가로줄 — 줄 대부분이 가로선 글자(─ ━ ═ — - ╌ ┄)이고 10자 이상.
+func isRule(_ line: String) -> Bool {
+    let t = line.trimmingCharacters(in: .whitespaces)
+    guard t.count >= 10 else { return false }
+    let n = t.filter { "─━═—-╌┄".contains($0) }.count
+    return Double(n) / Double(t.count) >= 0.8
 }
 
 /// Claude Code 의 도구 권한 창(「Do you want to proceed?」 + 「1. Yes」)이 화면 끝에 떠 있는지.
