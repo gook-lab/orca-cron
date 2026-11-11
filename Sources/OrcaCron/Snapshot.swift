@@ -42,7 +42,7 @@ enum Preview {
             }
             let root = which == "command"
                 ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
-                                   text: ProcessInfo.processInfo.environment["ORCA_CRON_PREVIEW_TEXT"] ?? "/zm", cancel: {}, done: {}).frame(width: 400))
+                                   text: ProcessInfo.processInfo.environment["ORCA_CRON_PREVIEW_TEXT"] ?? "/zm", cancel: {}, done: {}).completionEscape().frame(width: 400))
                 : AnyView(MenuView(model: model, windowed: false, screen: screen))
             let host = NSHostingView(rootView: root.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),

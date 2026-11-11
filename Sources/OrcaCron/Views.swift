@@ -120,6 +120,7 @@ struct MenuView: View {
 
     var body: some View {
         content
+            .completionEscape()
             .frame(width: windowed ? nil : 400)
             .frame(maxWidth: windowed ? .infinity : nil, maxHeight: windowed ? .infinity : nil, alignment: .top)
     }
@@ -841,11 +842,13 @@ struct PromptEditor: View {
     /// 디바운스한 후보와 그 후보를 찾은 조각. 타자 중에는 잠깐 앞 조각의 후보가 보일 수 있다.
     @State private var shown: [ClaudeCommand] = []
     @State private var shownFor: String?
+    /// esc 로 닫은 조각. 글자를 더 치거나 지워 조각이 바뀌면 다시 뜬다.
+    @State private var dismissedFor: String?
 
     var token: String? { commands.isEmpty ? nil : CommandCatalog.trailingToken(text) }
 
     var body: some View {
-        let list = token == nil ? [] : shown
+        let list = token == nil || token == dismissedFor ? [] : shown
         let current = list.isEmpty ? 0 : min(selected, list.count - 1)
         VStack(alignment: .leading, spacing: 4) {
             TextEditor(text: $text)
@@ -856,8 +859,10 @@ struct PromptEditor: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
                 // 후보가 떠 있을 때만 ↑↓ 로 고르고 tab·return 으로 넣는다. 후보가 없으면 평소대로 커서 이동·줄바꿈.
-                .onKeyPress(keys: [.upArrow, .downArrow, .tab, .return]) { press in
-                    guard let token, press.modifiers.isDisjoint(with: [.shift, .command, .option, .control]) else {
+                // esc 는 후보만 닫는다(폼 취소로 넘어가지 않음). 후보가 없으면 평소대로 폼 취소.
+                .onKeyPress(keys: [.upArrow, .downArrow, .tab, .return, .escape]) { press in
+                    guard let token, token != dismissedFor,
+                          press.modifiers.isDisjoint(with: [.shift, .command, .option, .control]) else {
                         return .ignored
                     }
                     if shownFor != token { show(CommandCatalog.suggestions(token, in: commands), for: token) } // 디바운스를 기다리지 않고 지금 조각으로
@@ -866,13 +871,14 @@ struct PromptEditor: View {
                     switch press.key {
                     case .downArrow: selected = CommandCatalog.step(current, by: 1, count: shown.count)
                     case .upArrow: selected = CommandCatalog.step(current, by: -1, count: shown.count)
+                    case .escape: dismissedFor = token
                     default: text = CommandCatalog.complete(text, with: shown[current].name)
                     }
                     return .handled
                 }
                 // 첫 `/` 는 바로, 이어지는 타자는 멈춘 뒤 한 번만 찾는다. 명령 목록이 새로 읽히면 다시 찾는다.
                 .task(id: "\(token ?? "\u{0}")#\(commands.count)") {
-                    guard let token else { return show([], for: nil) }
+                    guard let token else { dismissedFor = nil; return show([], for: nil) }
                     if shownFor != nil {
                         try? await Task.sleep(for: SearchTiming.debounce)
                         if Task.isCancelled { return }
@@ -880,11 +886,14 @@ struct PromptEditor: View {
                     show(CommandCatalog.suggestions(token, in: commands), for: token)
                 }
             if !list.isEmpty {
-                CommandList(items: list, selected: current, visibleRows: 6) {
+                CommandList(items: list, selected: current, visibleRows: 6, hover: { selected = $0 }) {
                     text = CommandCatalog.complete(text, with: $0.name)
                 }
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-                Text("↑↓ 고르기 · tab·return 넣기 · 후보 \(list.count)개").font(.caption2).foregroundStyle(.secondary)
+                Text("↑↓ 고르기 · tab·return 넣기 · esc 닫기 · 후보 \(list.count)개").font(.caption2).foregroundStyle(.secondary)
+            } else if let token, !token.isEmpty, token != dismissedFor, shownFor == token,
+                      !commands.contains(where: { $0.name == token }) {
+                Text("「/\(token)」에 맞는 명령이 없습니다").font(.caption2).foregroundStyle(.secondary)
             } else if !commands.isEmpty {
                 Button { browsing = true } label: {
                     Label("/ 명령 넣기", systemImage: "command").font(.caption)
@@ -899,6 +908,7 @@ struct PromptEditor: View {
                 }
             }
         }
+        .preference(key: CompletionOpenKey.self, value: !list.isEmpty)
     }
 
     private func show(_ list: [ClaudeCommand], for token: String?) {
@@ -906,6 +916,38 @@ struct PromptEditor: View {
         shown = list
         shownFor = token
     }
+}
+
+/// `/` 자동완성 후보가 떠 있는지. 떠 있으면 esc 를 폼 취소가 아니라 후보 닫기에 쓴다 —
+/// 폼 「취소」의 esc 단축키가 입력 칸보다 먼저 키를 받기 때문에, 후보가 떠 있는 동안은 단축키를 내려 둔다.
+struct CompletionOpenKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct CompletionOpenEnv: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var completionOpen: Bool {
+        get { self[CompletionOpenEnv.self] }
+        set { self[CompletionOpenEnv.self] = newValue }
+    }
+}
+
+struct CompletionEscape: ViewModifier {
+    @State private var open = false
+    func body(content: Content) -> some View {
+        content
+            .environment(\.completionOpen, open)
+            .onPreferenceChange(CompletionOpenKey.self) { open = $0 }
+    }
+}
+
+extension View {
+    /// 안쪽 PromptEditor 의 후보가 떠 있는 동안 FormFooter 의 esc(취소)를 내려 둔다.
+    func completionEscape() -> some View { modifier(CompletionEscape()) }
 }
 
 /// 검색 칸·자동완성 디바운스 — 타자가 이만큼 멈추면 찾는다.
@@ -919,7 +961,14 @@ struct CommandList: View {
     let items: [ClaudeCommand]
     var selected: Int? = nil
     let visibleRows: Int
+    /// 마우스가 올라간 줄 — 고른 줄을 그 줄로 옮겨 칠한 줄이 하나만 남게 한다.
+    var hover: ((Int) -> Void)? = nil
     let pick: (ClaudeCommand) -> Void
+    /// 마우스로 옮긴 줄. 이 줄로 바뀐 것은 스크롤하지 않는다(스크롤되면 마우스 밑 줄이 바뀌어 흔들린다).
+    @State private var hovered: Int?
+    /// 마지막으로 본 마우스 위치. 키로 스크롤해 줄이 마우스 밑으로 지나가거나 목록이 마우스 밑에 뜰 때는
+    /// 마우스가 움직이지 않았으니 고른 줄을 옮기지 않는다.
+    @State private var mouse = NSEvent.mouseLocation
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -931,6 +980,13 @@ struct CommandList: View {
                             .frame(height: Self.rowHeight)
                             .background(RoundedRectangle(cornerRadius: 6)
                                 .fill(i == selected ? Color.accentColor.opacity(0.22) : .clear))
+                            .onHover { inside in
+                                let at = NSEvent.mouseLocation
+                                guard inside, let hover, at != mouse else { return }
+                                mouse = at
+                                hovered = i
+                                hover(i)
+                            }
                             .id(c.id)
                     }
                 }
@@ -939,7 +995,7 @@ struct CommandList: View {
             .scrollIndicators(items.count > visibleRows ? .visible : .hidden)
             .frame(height: CGFloat(min(items.count, visibleRows)) * Self.rowHeight + 4)
             .onChange(of: selected) {
-                guard let selected, items.indices.contains(selected) else { return }
+                guard let selected, selected != hovered, items.indices.contains(selected) else { return }
                 proxy.scrollTo(items[selected].id)
             }
         }
@@ -1010,8 +1066,13 @@ struct CommandBrowser: View {
                 found = search(query)
                 foundFor = query
             }
-            CommandList(items: list, selected: current, visibleRows: 12, pick: pick)
-            Text("↑↓ 고르기 · return 넣기").font(.caption2).foregroundStyle(.secondary)
+            if list.isEmpty {
+                Text("「\(query)」에 맞는 명령이 없습니다").font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: CommandList.rowHeight * 2)
+            } else {
+                CommandList(items: list, selected: current, visibleRows: 12, hover: { selected = $0 }, pick: pick)
+            }
+            Text("↑↓ 고르기 · return 넣기 · esc 닫기").font(.caption2).foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(width: 380)
@@ -1038,6 +1099,7 @@ struct FormFooter: View {
     let cancel: () -> Void
     let submit: () -> Void
     @State private var confirmDiscard = false
+    @Environment(\.completionOpen) private var completionOpen
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1055,7 +1117,7 @@ struct FormFooter: View {
                     cancel()
                 }
             }
-            .keyboardShortcut(.cancelAction)
+            .keyboardShortcut(completionOpen ? nil : .cancelAction)
             Button(primary, action: submit)
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
