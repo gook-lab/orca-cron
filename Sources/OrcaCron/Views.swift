@@ -151,6 +151,7 @@ struct ListView: View {
     static let idlePreview = 4
     @AppStorage("showAllIdleTerminals") private var showAllIdle = false
     @AppStorage("hideIdleTerminals") private var hideIdle = false
+    @AppStorage(Notifier.levelKey) private var notifyLevel = NotifyLevel.problems.rawValue
     /// 접어 둔 터미널 묶음(키를 줄바꿈으로 이은 것).
     @AppStorage("collapsedGroups") private var collapsedRaw = ""
 
@@ -246,6 +247,12 @@ struct ListView: View {
                     .help("지금 다시 확인")
                 Menu {
                     if !windowed { Button("창으로 열기", action: openWindow) }
+                    Picker("알림", selection: $notifyLevel) {
+                        ForEach(NotifyLevel.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                    Button("결과 명령 허용 규칙 복사") { model.copyAllowRule() }
+                        .help("받는 Claude Code 의 ~/.claude/settings.json permissions.allow 에 붙여 넣으면 결과 명령을 묻지 않습니다")
+                    Divider()
                     Button("터미널 묶음 모두 접기") { setCollapsed(Set(model.groups.filter { !$0.schedules.isEmpty }.map(\.key))) }
                     Button("모두 펼치기") { setCollapsed([]) }
                     Divider()
@@ -494,6 +501,7 @@ struct ScheduleRow: View {
     let onEdit: () -> Void
     @State private var confirmDelete = false
     @State private var hover = false
+    @State private var showHistory = false
 
     var body: some View {
         let s = schedule
@@ -511,6 +519,7 @@ struct ScheduleRow: View {
                     .foregroundStyle(s.enabled ? .primary : .secondary)
                 Text(scheduleLine(s)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 statusLine(s)
+                if showHistory { historyList(s) }
             }
             .contentShape(Rectangle())
             .onTapGesture { if !s.isOneShot { onEdit() } }
@@ -559,8 +568,13 @@ struct ScheduleRow: View {
             Text("대기 중 · \(s.waitNote ?? "다음 확인(30초 안)에 보냅니다")")
                 .font(.caption).foregroundStyle(.orange).lineLimit(2)
         } else if s.runId != nil {
-            Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.sentAt)) · 결과 기록을 기다리는 중")
-                .font(.caption).foregroundStyle(.blue).lineLimit(1)
+            if let b = s.blocked {
+                Text("⚠︎ \(b)").font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.sentAt)) · 결과 기록을 기다리는 중")
+                    .font(.caption).foregroundStyle(.blue).lineLimit(1)
+            }
         } else if let status = s.lastStatus {
             HStack(spacing: 4) {
                 Text("\(status) \(TimeText.short(s.history.first?.at ?? s.lastRunAt))")
@@ -572,11 +586,47 @@ struct ScheduleRow: View {
                     Link(destination: url) { Image(systemName: "arrow.up.right.square") }
                         .help(link)
                 }
+                if s.history.count > 1 {
+                    Spacer(minLength: 2)
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { showHistory.toggle() }
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text("기록 \(s.history.count)")
+                            Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold))
+                                .rotationEffect(.degrees(showHistory ? 90 : 0))
+                        }
+                    }
+                    .buttonStyle(.icon)
+                    .help("최근 실행 \(s.history.count)회")
+                }
             }
             .font(.caption)
         } else {
             Text("아직 실행 기록 없음").font(.caption).foregroundStyle(.tertiary)
         }
+    }
+
+    /// 최근 실행 기록(최대 10회) — 날짜 · 결과 · 요약 · 링크.
+    func historyList(_ s: Schedule) -> some View {
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        return VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(s.history.enumerated()), id: \.offset) { _, r in
+                HStack(spacing: 5) {
+                    Text(f.string(from: r.at)).foregroundStyle(.tertiary).monospacedDigit()
+                    Text(r.status).foregroundStyle(color(r.status))
+                    if let sum = r.summary, !sum.isEmpty {
+                        Text(sum).foregroundStyle(.secondary).lineLimit(1).help(sum)
+                    }
+                    if let link = r.link, let url = URL(string: link) {
+                        Link(destination: url) { Image(systemName: "arrow.up.right.square") }.help(link)
+                    }
+                }
+            }
+        }
+        .font(.caption2)
+        .padding(.top, 3).padding(.leading, 2)
     }
 
     func color(_ status: String) -> Color {
@@ -823,6 +873,19 @@ struct EditView: View {
                         Text(mode == .every ? "1~59 사이 분을 넣으세요" : "시각 형식이 맞지 않습니다: \(cron)")
                             .font(.caption).foregroundStyle(.red)
                     }
+                }
+                FormRow(title: "늦으면") {
+                    Picker("", selection: Binding(get: { draft.lateLimit ?? 0 }, set: { draft.lateLimit = $0 == 0 ? nil : $0 })) {
+                        Text("늦어도 보냄").tag(0.0)
+                        Text("30분 넘게 늦으면 건너뜀").tag(1800.0)
+                        Text("1시간 넘게 늦으면 건너뜀").tag(3600.0)
+                        Text("3시간 넘게 늦으면 건너뜀").tag(10800.0)
+                        Text("6시간 넘게 늦으면 건너뜀").tag(21600.0)
+                    }
+                    .labelsHidden().fixedSize()
+                    Text("맥이 잠들었거나 앱이 꺼져 있던 동안 지나간 시각을 깨어난 뒤 보낼지 정합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 

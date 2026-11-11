@@ -294,5 +294,83 @@ do {
     check(Engine.merge(before: before, after: after, current: deleted).schedules.isEmpty, "틱 도중 지운 예약은 되살리지 않음")
 }
 
+// MARK: 권한 창 · 결과 대기 중 멈춤 · 늦은 실행
+
+let permissionScreen = ["⏺ Bash(~/Applications/OrcaCron.app/Contents/MacOS/OrcaCron finish --run r1 ...)", rule,
+                        " Bash command", "   OrcaCron finish --run r1", " Do you want to proceed?",
+                        " ❯ 1. Yes", "   2. Yes, and don't ask again for OrcaCron finish commands", "   3. No, and tell Claude what to do differently (esc)"]
+check(permissionPrompt(screenTail: permissionScreen), "권한 창 알아봄")
+check(permissionPrompt(screenTail: ["│ Do you want to make this edit to a.md? │", "│ ❯ 1. Yes │", "│   2. No │"]), "테두리 있는 권한 창")
+check(!permissionPrompt(screenTail: [rule, "❯ Do you want to proceed? 라고 쓰는 중", rule]), "입력 칸의 글은 권한 창 아님")
+check(!permissionPrompt(screenTail: ["끝", rule, "❯", rule]), "빈 입력 칸은 권한 창 아님")
+
+do {
+    // 보낸 뒤 터미널이 권한 창에서 멈추면 적고, 결과가 오면 지운다
+    let port = FakePort(terminals: [termA], idle: ["term_a"])
+    var store = StoreFile(schedules: [schedule("p", cron: "0 9 * * *")])
+    store.schedules[0].runId = "rp"
+    store.schedules[0].sentAt = at(2026, 11, 11, 9, 0)
+    port.tails["term_a"] = permissionScreen
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 1))
+    check(store.schedules[0].blocked?.hasPrefix("권한 확인 창") == true, "결과 대기 중 권한 창", store.schedules[0].blocked ?? "nil")
+    port.tails["term_a"] = ["⏺ 작업 중", rule, "❯", rule]
+    port.idle = []
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 9, 2))
+    check(store.schedules[0].blocked == nil, "다시 일하면 멈춤 표시 지움")
+    _ = Engine.apply(results: [RunResult(runId: "rp", status: "성공", summary: nil, link: nil, at: at(2026, 11, 11, 9, 3))], to: &store)
+    check(store.schedules[0].blocked == nil && store.schedules[0].runId == nil, "결과가 오면 멈춤 없음")
+
+    // 끝났는데 결과 명령을 안 불렀으면 3분 조용한 뒤 알린다
+    var quietA = termA
+    quietA.lastOutputAt = at(2026, 11, 11, 10, 0)
+    port.terminals = [quietA]
+    port.idle = ["term_a"]
+    port.tails["term_a"] = ["⏺ 다 했습니다", rule, "❯", rule]
+    store.schedules[0].runId = "rq"
+    store.schedules[0].sentAt = at(2026, 11, 11, 9, 59)
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 10, 1))
+    check(store.schedules[0].blocked == nil, "조용한 지 3분 전에는 기다림")
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 10, 4))
+    check(store.schedules[0].blocked?.hasPrefix("터미널은 끝났는데") == true, "끝났는데 결과 기록 없음", store.schedules[0].blocked ?? "nil")
+    port.tails["term_a"] = ["어느 쪽으로 할까요?", "❯ 1. A", "  2. B"]
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 10, 5))
+    check(store.schedules[0].blocked?.hasPrefix("질문·선택 창") == true, "질문 창에서 멈춤", store.schedules[0].blocked ?? "nil")
+}
+
+do {
+    // 늦으면 건너뜀 — 한도 안이면 보내고, 넘으면 기록만 남긴다
+    let port = FakePort(terminals: [termA], idle: ["term_a"])
+    var store = StoreFile(schedules: [schedule("late", cron: "0 9 * * *"), schedule("lazy", cron: "0 9 * * *", terminal: "term_a")])
+    store.schedules[0].lateLimit = 3600
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 8, 0))
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 11, 12, 30), makeRunId: rid)
+    let late = store.schedules[0]
+    check(late.lastStatus == "건너뜀" && late.pendingSince == nil && late.lastSummary?.contains("3시간 30분 늦음") == true,
+          "한도보다 늦으면 건너뜀", late.lastSummary ?? "nil")
+    check(late.nextRunAt == at(2026, 11, 12, 9, 0), "건너뛴 뒤 다음 시각은 내일")
+    check(port.sent.count == 1 && store.schedules[1].runId != nil, "한도가 없으면 늦어도 보냄")
+
+    var soon = StoreFile(schedules: [schedule("ok", cron: "0 9 * * *")])
+    soon.schedules[0].lateLimit = 3600
+    let port2 = FakePort(terminals: [termA], idle: ["term_a"])
+    _ = Engine.tick(&soon, port: port2, config: config, now: at(2026, 11, 11, 8, 0))
+    _ = Engine.tick(&soon, port: port2, config: config, now: at(2026, 11, 11, 9, 40), makeRunId: rid)
+    check(port2.sent.count == 1, "한도 안에서 늦으면 보냄")
+
+    // 저장 파일에 새 칸이 없어도 읽힌다(옛 판 호환)
+    let old = #"{"schedules":[{"id":"a","name":"a","terminal":{"handle":"h","label":"l"},"cron":"0 9 * * *","enabled":true,"history":[]}]}"#
+    let decoded = try? JSONDecoder().decode(StoreFile.self, from: Data(old.utf8))
+    check(decoded?.schedules.first?.lateLimit == nil && decoded?.schedules.first?.blocked == nil, "옛 schedules.json 호환")
+
+    // 병합은 멈춤 표시를 옮긴다
+    var before = StoreFile(schedules: [schedule("mb", cron: "0 9 * * *")])
+    before.schedules[0].runId = "x"
+    var after = before
+    after.schedules[0].blocked = "권한 확인 창에서 멈춤"
+    var current = before
+    current.schedules[0].name = "고침"
+    check(Engine.merge(before: before, after: after, current: current).schedules[0].blocked == "권한 확인 창에서 멈춤", "병합이 멈춤 표시를 옮김")
+}
+
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")
 exit(failures == 0 ? 0 : 1)

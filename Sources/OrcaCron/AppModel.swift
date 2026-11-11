@@ -96,6 +96,12 @@ final class AppModel: ObservableObject {
         case .available(let info):
             update = info
             updateMessage = nil
+            let key = "notifiedUpdateHead"
+            if Notifier.level != .off, !info.head.isEmpty, UserDefaults.standard.string(forKey: key) != info.head {
+                UserDefaults.standard.set(info.head, forKey: key)
+                Notifier.post(title: "OrcaCron 업데이트가 있습니다",
+                              body: "새 커밋 \(info.behind)개 — " + (info.subjects.first ?? "") + " · 메뉴의 「업데이트」를 누르세요")
+            }
         case .failed(let message, let quiet):
             update = nil
             if manual || !quiet { updateMessage = message }
@@ -146,7 +152,9 @@ final class AppModel: ObservableObject {
             let lines = log
             await MainActor.run {
                 if sending {
+                    let old = self.store
                     self.store = Engine.merge(before: before, after: finished, current: self.store)
+                    self.notifyChanges(old: old, new: self.store)
                     self.persist()
                     Store.removeResults(results.map(\.0))
                     Store.appendLog(lines, paths, now: now)
@@ -278,6 +286,32 @@ final class AppModel: ObservableObject {
         return d
     }
 
+    /// 새 결과(실패·결과 없음·건너뜀, 설정에 따라 성공)와 새 멈춤을 알린다.
+    private func notifyChanges(old: StoreFile, new: StoreFile) {
+        let level = Notifier.level
+        guard level != .off else { return }
+        for s in new.schedules {
+            let o = old.schedules.first { $0.id == s.id }
+            if let r = s.history.first, r.at != o?.history.first?.at {
+                let problem = ["실패", "결과 없음", "건너뜀"].contains(r.status)
+                if problem || (level == .all && r.status == "성공") {
+                    Notifier.post(title: "OrcaCron · \(s.name)", body: r.status + (r.summary.map { " — \($0)" } ?? ""))
+                }
+            }
+            if let b = s.blocked, b != o?.blocked {
+                Notifier.post(title: "OrcaCron · \(s.name)", body: b)
+            }
+        }
+    }
+
+    /// 받는 Claude Code 세션이 결과 명령을 묻지 않고 실행하게 하는 권한 규칙(~/.claude/settings.json 의 permissions.allow).
+    var allowRule: String { "Bash(\(cliPath) finish:*)" }
+
+    func copyAllowRule() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("\"\(allowRule)\"", forType: .string)
+    }
+
     func openFolder() { NSWorkspace.shared.open(paths.base) }
     func openLog() { NSWorkspace.shared.open(paths.log) }
 
@@ -313,7 +347,9 @@ final class AppModel: ObservableObject {
     }
 
     var needsAttention: Bool {
-        store.schedules.contains { $0.waitNote != nil || ($0.enabled && ["실패", "결과 없음"].contains($0.lastStatus ?? "")) }
+        store.schedules.contains {
+            $0.waitNote != nil || $0.blocked != nil || ($0.enabled && ["실패", "결과 없음"].contains($0.lastStatus ?? ""))
+        }
     }
 
     func taskTitle(_ key: String?) -> String? {

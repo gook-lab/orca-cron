@@ -72,6 +72,17 @@ public func promptState(screenTail lines: [String]) -> PromptState {
     return .unknown
 }
 
+/// Claude Code 의 도구 권한 창(「Do you want to proceed?」 + 「1. Yes」)이 화면 끝에 떠 있는지.
+public func permissionPrompt(screenTail lines: [String]) -> Bool {
+    let recent = lines.suffix(30).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " │|\u{a0}")) }
+    let asks = recent.contains { $0.contains("Do you want to") }
+    let yes = recent.contains { line in
+        let l = line.drop(while: { "❯›> ".contains($0) })
+        return l.hasPrefix("1. Yes") || l.hasPrefix("1.Yes")
+    }
+    return asks && yes
+}
+
 /// Orca CLI(`orca terminal …`)로 터미널을 다룬다.
 public struct OrcaCLI: TerminalPort {
     public let binary: String

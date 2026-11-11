@@ -45,6 +45,8 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
     public var oneShot: Bool?
     /// 끝나면 결과 명령을 부르게 할지. 정해 두지 않으면 예약은 받고, 1회 보내기는 받지 않는다.
     public var track: Bool?
+    /// 예정 시각보다 이만큼(초) 넘게 늦으면 보내지 않고 건너뛴다(맥 잠자기·앱 꺼짐). 없으면 늦어도 보낸다.
+    public var lateLimit: Double?
 
     // 실행기가 채우는 칸
     public var nextRunAt: Date?
@@ -54,6 +56,8 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
     public var pendingSince: Date?
     public var pendingReason: String?
     public var waitNote: String?
+    /// 보낸 뒤 결과를 기다리는 동안 터미널이 멈춰 보이는 이유(권한 창 등). 결과가 오면 지운다.
+    public var blocked: String?
     public var runId: String?
     public var sentAt: Date?
     public var lastRunAt: Date?

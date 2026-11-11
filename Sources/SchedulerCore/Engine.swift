@@ -33,6 +33,7 @@ public enum Engine {
             store.schedules[i].record(RunRecord(at: r.at, status: r.status, summary: r.summary, link: r.link))
             store.schedules[i].runId = nil
             store.schedules[i].sentAt = nil
+            store.schedules[i].blocked = nil
             log.append("\(store.schedules[i].name): \(r.status) — \(r.summary ?? "")")
         }
         return log
@@ -68,8 +69,16 @@ public enum Engine {
             // 꺼진 예약도 시각은 굴린다 — 다시 켰을 때 지나간 시각으로 바로 돌지 않게.
             if let next = s.nextRunAt, next <= now {
                 if s.enabled && s.pendingSince == nil {
-                    s.pendingSince = now
-                    s.pendingReason = "예약"
+                    let late = now.timeIntervalSince(next)
+                    if let limit = s.lateLimit, late > limit {
+                        // 맥이 잠들었거나 앱이 꺼져 있던 동안 지나간 시각 — 정한 한도보다 늦으면 보내지 않는다.
+                        s.record(RunRecord(at: now, status: "건너뜀",
+                                           summary: "예정 \(clock(next))보다 \(duration(late)) 늦음(잠자기·앱 꺼짐) — 늦으면 건너뜀 설정"))
+                        log.append("\(s.name): 건너뜀 — \(duration(late)) 늦음")
+                    } else {
+                        s.pendingSince = now
+                        s.pendingReason = "예약"
+                    }
                 }
                 s.nextRunAt = Cron(s.cron)?.next(after: now)
             }
@@ -79,6 +88,7 @@ public enum Engine {
                                    summary: "보낸 뒤 \(Int(config.runTimeout / 3600))시간 안에 결과 기록이 오지 않음"))
                 s.runId = nil
                 s.sentAt = nil
+                s.blocked = nil
                 log.append("\(s.name): 결과 없음")
             }
             store.schedules[i] = s
@@ -92,6 +102,7 @@ public enum Engine {
             return (log, nil)
         }
         log += reconnect(&store, terminals: terminals)
+        log += checkInFlight(&store, port: port, terminals: terminals, now: now)
 
         let pending = store.schedules.indices.filter { store.schedules[$0].pendingSince != nil }
 
@@ -125,10 +136,13 @@ public enum Engine {
                 continue
             }
             guard port.isIdle(t.handle) else { waitOrGiveUp("터미널이 작업 중"); continue }
-            switch promptState(screenTail: port.screenTail(t.handle)) {
+            let tail = port.screenTail(t.handle)
+            switch promptState(screenTail: tail) {
             case .empty: break
             case .typing: waitOrGiveUp("입력 칸에 쓰던 글이 있음"); continue
-            case .unknown: waitOrGiveUp("입력 칸이 보이지 않음(질문·권한 창이 떠 있을 수 있음)"); continue
+            case .unknown:
+                waitOrGiveUp(permissionPrompt(screenTail: tail) ? "권한 확인 창이 떠 있음" : "입력 칸이 보이지 않음(질문·선택 창이 떠 있을 수 있음)")
+                continue
             }
 
             let runId = makeRunId()
@@ -156,6 +170,59 @@ public enum Engine {
             }
         }
         return (log, terminals)
+    }
+
+    /// 결과를 기다리는 실행의 터미널을 본다. 권한 창이나 질문 창에 멈췄거나, 끝났는데 결과 명령을 안 불렀으면 적어 둔다.
+    /// 터미널이 일하는 중이면 지운다. 같은 터미널은 한 번만 읽는다.
+    public static func checkInFlight(_ store: inout StoreFile, port: TerminalPort, terminals: [TerminalInfo], now: Date,
+                                     finishedQuiet: TimeInterval = 180) -> [String] {
+        var log: [String] = []
+        var seen: [String: String?] = [:]
+        for i in store.schedules.indices where store.schedules[i].runId != nil {
+            let handle = store.schedules[i].terminal.handle
+            let note: String?
+            if let cached = seen[handle] {
+                note = cached
+            } else {
+                note = inFlightNote(port: port, terminal: terminals.first { $0.handle == handle }, now: now,
+                                    finishedQuiet: finishedQuiet)
+                seen[handle] = note
+            }
+            if note != store.schedules[i].blocked {
+                store.schedules[i].blocked = note
+                if let note { log.append("\(store.schedules[i].name): 결과 대기 중 멈춤 — \(note)") }
+            }
+        }
+        return log
+    }
+
+    static func inFlightNote(port: TerminalPort, terminal t: TerminalInfo?, now: Date, finishedQuiet: TimeInterval) -> String? {
+        guard let t else { return "터미널이 사라짐 — 결과가 오지 않을 수 있습니다" }
+        let tail = port.screenTail(t.handle)
+        if permissionPrompt(screenTail: tail) { return "권한 확인 창에서 멈춤 — 그 터미널에서 허용해 주세요" }
+        guard port.isIdle(t.handle) else { return nil }
+        switch promptState(screenTail: tail) {
+        case .unknown:
+            return "질문·선택 창에서 멈춘 것 같음 — 그 터미널을 확인해 주세요"
+        case .empty:
+            if let last = t.lastOutputAt, now.timeIntervalSince(last) >= finishedQuiet {
+                return "터미널은 끝났는데 결과 기록이 없음 — 그 터미널을 확인해 주세요"
+            }
+            return nil
+        case .typing:
+            return nil
+        }
+    }
+
+    static func clock(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        return f.string(from: d)
+    }
+
+    static func duration(_ t: TimeInterval) -> String {
+        let m = Int(t / 60)
+        return m >= 60 ? "\(m / 60)시간" + (m % 60 > 0 ? " \(m % 60)분" : "") : "\(max(m, 1))분"
     }
 
     /// 예약이 가리키는 터미널을 지금 목록에 맞춘다.
@@ -215,6 +282,7 @@ public enum Engine {
             s.lastSummary = a.lastSummary
             s.lastLink = a.lastLink
             s.history = a.history
+            s.blocked = a.blocked
             s.runNowHandledAt = a.runNowHandledAt
             if a.runId != b?.runId || (a.pendingSince == nil && b?.pendingSince != nil) {
                 s.clearPending()

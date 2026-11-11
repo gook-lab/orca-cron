@@ -10,6 +10,7 @@ enum UpdateCheck: Sendable {
 struct UpdateInfo: Sendable, Equatable {
     let behind: Int // 설치된 커밋 뒤로 새로 들어온 커밋 수
     let subjects: [String] // 최근 것부터 최대 3개
+    var head = "" // 원격 끝 커밋 — 같은 업데이트는 한 번만 알린다
 }
 
 /// 업데이트 확인 — 빌드할 때 Info.plist 에 적어 둔 소스 폴더에서 git fetch 하고, 설치된 커밋 뒤로 새 커밋이 있는지 본다.
@@ -43,7 +44,8 @@ enum Updater {
         guard behind > 0 else { return .upToDate }
         let subjects = run(dir, ["log", "--format=%s", "-3", "\(commit)..\(upstream)"] + appPaths)?
             .split(separator: "\n").map(String.init) ?? []
-        return .available(UpdateInfo(behind: behind, subjects: subjects))
+        let head = run(dir, ["rev-parse", upstream]) ?? ""
+        return .available(UpdateInfo(behind: behind, subjects: subjects, head: head))
     }
 
     /// 성공하면 build.sh 가 이 앱을 끄고 새 앱을 띄운다. completion 은 실패했을 때만 불린다(로그 마지막 줄을 넘긴다).
