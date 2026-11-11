@@ -19,4 +19,5 @@ if let bundleId = Bundle.main.bundleIdentifier,
     exit(0)
 }
 
+MenuBarPlacement.apply()
 OrcaCronApp.main()

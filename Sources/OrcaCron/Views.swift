@@ -14,6 +14,18 @@ enum WindowOpener {
     @MainActor static var open: (() -> Void)?
 }
 
+/// 메뉴 막대 아이콘 자리. macOS 는 새로 켜진 앱의 아이콘을 맨 왼쪽에 놓아, 아이콘이 많은 노치 맥에선
+/// 앱을 다시 켤 때마다(업데이트 포함) 노치 뒤로 가려진다. 위치 기억 값이 없을 때만 오른쪽 끝에서 300pt
+/// (배터리 292 바로 왼쪽)를 넣는다. ⌘ 를 누른 채 아이콘을 끌어 옮기면 macOS 가 이 값을 바꾸고, 그 뒤로는 건드리지 않는다.
+enum MenuBarPlacement {
+    static let key = "NSStatusItem Preferred Position Item-0"
+    static let rightOffset = 300.0
+
+    static func apply(_ defaults: UserDefaults = .standard) {
+        if defaults.object(forKey: key) == nil { defaults.set(rightOffset, forKey: key) }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DistributedNotificationCenter.default().addObserver(forName: WindowOpener.notification, object: nil, queue: .main) { _ in

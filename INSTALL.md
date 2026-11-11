@@ -132,7 +132,7 @@ rm -rf ~/Applications/OrcaCron.app
 
 | 증상 | 원인 | 해결 |
 |---|---|---|
-| 메뉴 막대에 아이콘이 없음 | 메뉴 막대가 노치까지 차서 새 아이콘이 가려짐 | `open ~/Applications/OrcaCron.app` 으로 창 열기, 또는 ⌘ 를 누른 채 안 쓰는 아이콘을 메뉴 막대 밖으로 끌어내기 |
+| 메뉴 막대에 아이콘이 없음 | 메뉴 막대가 노치까지 차서 아이콘이 가려짐. v1.13 부터는 처음 켤 때 배터리 왼쪽에 자리 잡지만, 그 전에 ⌘-끌기로 옮긴 자리가 노치 쪽이면 그대로 둡니다 | `open ~/Applications/OrcaCron.app` 으로 창 열기, 또는 ⌘ 를 누른 채 안 쓰는 아이콘을 메뉴 막대 밖으로 끌어내기 |
 | `xcrun: error: invalid active developer path` | Command Line Tools 없음 | 1단계의 `xcode-select --install` |
 | `swift build` 가 `tools version` 오류 | Swift 5.x | Command Line Tools 업데이트 |
 | 「Orca CLI 를 찾지 못했습니다」 | Orca 가 `/Applications`·`~/Applications` 밖에 있음 | `ORCA_BIN` 에 `orca` 경로를 주고 다시 실행, 또는 Orca 를 `/Applications` 로 옮기기 |
