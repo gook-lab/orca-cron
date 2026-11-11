@@ -399,6 +399,12 @@ do {
     check(CommandCatalog.match("zm-ml-n", in: list).map(\.name) == ["zm-ml-next"], "앞부분 맞춤")
     check(CommandCatalog.match("번호", in: list).map(\.name) == ["zm-ml-next"], "설명으로 찾기")
     check(CommandCatalog.match("send", in: list).map(\.name) == ["kakaotalk:send"], "플러그인 이름 뒷부분")
+    check(CommandCatalog.match("ZM-ML", in: list).map(\.name) == ["zm-ml-start", "zm-ml-next"], "대소문자 무시 · 목록 순서 유지")
+    check(CommandCatalog.match("ml", in: list, limit: 1).map(\.name) == ["zm-ml-start"], "limit 에서 자름")
+    check(CommandCatalog.match("view", in: list).map(\.name) == ["review"], "이름 중간에 들어 있음")
+    check(CommandCatalog.match("없는말", in: list).isEmpty, "맞는 것 없음")
+    check(CommandCatalog.suggestions("zm-ml-next", in: list).isEmpty, "이름을 다 치면 후보를 닫음")
+    check(CommandCatalog.suggestions("zm-ml", in: list).count == 2, "조각이면 후보")
     check(CommandCatalog.locked(in: "먼저 /review 를 하고 /zm-ml-next 를 실행", list: list).map(\.name) == ["review"], "템플릿 안 잠긴 명령 찾기")
 
     // 폴더에서 읽기: 명령 · 스킬 · 숨긴 스킬 · 잠긴 스킬, 프로젝트가 개인보다 앞

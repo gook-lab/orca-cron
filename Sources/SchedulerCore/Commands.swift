@@ -8,12 +8,20 @@ public struct ClaudeCommand: Identifiable, Equatable, Sendable {
     /// 받는 Claude 가 스스로(스킬 도구로) 부를 수 있는지. 내장 명령·잠긴 스킬(disable-model-invocation)은 false.
     public var modelInvocable: Bool
     public var id: String { source + "/" + name }
+    /// 찾기용 소문자 UTF-8 사본 — 글자를 칠 때마다 수백 개를 다시 바꾸고 유니코드 비교를 하지 않도록 만들 때 한 번 만든다.
+    let nameKey: [UInt8]
+    let tailKey: [UInt8] // 플러그인 이름 「플러그인:이름」의 뒷부분
+    let detailKey: [UInt8]
 
     public init(name: String, detail: String, source: String, modelInvocable: Bool) {
         self.name = name
         self.detail = detail
         self.source = source
         self.modelInvocable = modelInvocable
+        let lower = name.lowercased()
+        nameKey = Array(lower.utf8)
+        tailKey = Array((lower.split(separator: ":").last.map(String.init) ?? lower).utf8)
+        detailKey = Array(detail.lowercased().utf8)
     }
 }
 
@@ -137,14 +145,37 @@ public enum CommandCatalog {
     }
 
     /// 조각에 맞는 명령 — 이름 앞부분이 맞는 것을 먼저, 그다음 이름·설명에 들어 있는 것.
+    /// 한 번 훑어서 나눈다. 앞부분 맞춤이 limit 을 채우면 나머지는 「들어 있음」 검사도 하지 않는다.
     public static func match(_ token: String, in list: [ClaudeCommand], limit: Int = 8) -> [ClaudeCommand] {
-        let q = token.lowercased()
+        let q = Array(token.lowercased().utf8)
         guard !q.isEmpty else { return Array(list.prefix(limit)) }
-        let prefixHits = list.filter { $0.name.lowercased().hasPrefix(q) || $0.name.lowercased().split(separator: ":").last?.hasPrefix(q) == true }
-        let others = list.filter { c in
-            !prefixHits.contains(c) && (c.name.lowercased().contains(q) || c.detail.lowercased().contains(q))
+        var front: [ClaudeCommand] = []
+        var rest: [ClaudeCommand] = []
+        for c in list {
+            if c.nameKey.starts(with: q) || c.tailKey.starts(with: q) {
+                front.append(c)
+            } else if front.count + rest.count < limit, contains(c.nameKey, q) || contains(c.detailKey, q) {
+                rest.append(c)
+            }
         }
-        return Array((prefixHits + others).prefix(limit))
+        return Array((front + rest).prefix(limit))
+    }
+
+    static func contains(_ hay: [UInt8], _ needle: [UInt8]) -> Bool {
+        guard needle.count <= hay.count else { return false }
+        let first = needle[0]
+        var i = 0
+        while i <= hay.count - needle.count {
+            if hay[i] == first, hay[i..<(i + needle.count)].elementsEqual(needle) { return true }
+            i += 1
+        }
+        return false
+    }
+
+    /// 입력 칸 자동완성 후보. 이름을 다 쳐서 하나만 맞으면 띄우지 않는다.
+    public static func suggestions(_ token: String, in list: [ClaudeCommand], limit: Int = .max) -> [ClaudeCommand] {
+        let hits = match(token, in: list, limit: limit)
+        return hits.count == 1 && hits[0].name == token ? [] : hits
     }
 
     /// 후보 목록에서 고른 줄을 ↑↓ 로 옮긴다. 끝에서 넘기면 반대쪽 끝으로 돈다.

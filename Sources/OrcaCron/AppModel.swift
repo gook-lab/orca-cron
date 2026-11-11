@@ -399,12 +399,31 @@ final class AppModel: ObservableObject {
         commands(projectDirs: Array(Set(terminals.map(\.worktreePath))).sorted())
     }
 
+    /// 처음 한 번만 그 자리에서 읽는다(0.1~0.2초). 60초가 지나면 가진 목록을 그대로 돌려주고 뒤에서 다시 읽어,
+    /// 입력 중에 화면이 멈추지 않게 한다. 새 목록이 다르면 화면을 다시 그린다.
     func commands(projectDirs: [String]) -> [ClaudeCommand] {
         let key = projectDirs.joined(separator: "|")
-        if let hit = commandCache[key], Date().timeIntervalSince(hit.at) < 60 { return hit.list }
-        let list = CommandCatalog.load(projectDirs: projectDirs)
+        guard let hit = commandCache[key] else {
+            let list = CommandCatalog.load(projectDirs: projectDirs)
+            commandCache[key] = (Date(), list)
+            return list
+        }
+        if Date().timeIntervalSince(hit.at) >= 60, commandLoading.insert(key).inserted {
+            Task.detached(priority: .utility) { [weak self] in
+                let list = CommandCatalog.load(projectDirs: projectDirs)
+                await self?.storeCommands(list, key: key)
+            }
+        }
+        return hit.list
+    }
+
+    private var commandLoading = Set<String>()
+
+    private func storeCommands(_ list: [ClaudeCommand], key: String) {
+        commandLoading.remove(key)
+        let changed = commandCache[key]?.list != list
         commandCache[key] = (Date(), list)
-        return list
+        if changed { objectWillChange.send() }
     }
 
     // MARK: 잠자기 막기

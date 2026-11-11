@@ -3,6 +3,7 @@ import SwiftUI
 import SchedulerCore
 
 /// `OrcaCron preview <png> [list|collapsed|update|edit|new|send|command|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
+/// `command` 의 입력 글은 ORCA_CRON_PREVIEW_TEXT 로 바꿀 수 있다(기본 `/zm`).
 enum Preview {
     static func run(_ args: [String]) -> Never {
         guard let out = args.first else {
@@ -41,7 +42,7 @@ enum Preview {
             }
             let root = which == "command"
                 ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
-                                   text: "/zm", cancel: {}, done: {}).frame(width: 400))
+                                   text: ProcessInfo.processInfo.environment["ORCA_CRON_PREVIEW_TEXT"] ?? "/zm", cancel: {}, done: {}).frame(width: 400))
                 : AnyView(MenuView(model: model, windowed: false, screen: screen))
             let host = NSHostingView(rootView: root.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),

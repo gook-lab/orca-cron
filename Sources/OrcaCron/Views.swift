@@ -838,17 +838,14 @@ struct PromptEditor: View {
     var commands: [ClaudeCommand] = []
     @State private var browsing = false
     @State private var selected = 0
+    /// 디바운스한 후보와 그 후보를 찾은 조각. 타자 중에는 잠깐 앞 조각의 후보가 보일 수 있다.
+    @State private var shown: [ClaudeCommand] = []
+    @State private var shownFor: String?
 
     var token: String? { commands.isEmpty ? nil : CommandCatalog.trailingToken(text) }
 
-    var suggestions: [ClaudeCommand] {
-        guard let token else { return [] }
-        let hits = CommandCatalog.match(token, in: commands, limit: 200)
-        return hits.count == 1 && hits[0].name == token ? [] : hits
-    }
-
     var body: some View {
-        let list = suggestions
+        let list = token == nil ? [] : shown
         let current = list.isEmpty ? 0 : min(selected, list.count - 1)
         VStack(alignment: .leading, spacing: 4) {
             TextEditor(text: $text)
@@ -860,17 +857,28 @@ struct PromptEditor: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
                 // 후보가 떠 있을 때만 ↑↓ 로 고르고 tab·return 으로 넣는다. 후보가 없으면 평소대로 커서 이동·줄바꿈.
                 .onKeyPress(keys: [.upArrow, .downArrow, .tab, .return]) { press in
-                    guard !list.isEmpty, press.modifiers.isDisjoint(with: [.shift, .command, .option, .control]) else {
+                    guard let token, press.modifiers.isDisjoint(with: [.shift, .command, .option, .control]) else {
                         return .ignored
                     }
+                    if shownFor != token { show(CommandCatalog.suggestions(token, in: commands), for: token) } // 디바운스를 기다리지 않고 지금 조각으로
+                    guard !shown.isEmpty else { return .ignored }
+                    let current = min(selected, shown.count - 1)
                     switch press.key {
-                    case .downArrow: selected = CommandCatalog.step(current, by: 1, count: list.count)
-                    case .upArrow: selected = CommandCatalog.step(current, by: -1, count: list.count)
-                    default: text = CommandCatalog.complete(text, with: list[current].name)
+                    case .downArrow: selected = CommandCatalog.step(current, by: 1, count: shown.count)
+                    case .upArrow: selected = CommandCatalog.step(current, by: -1, count: shown.count)
+                    default: text = CommandCatalog.complete(text, with: shown[current].name)
                     }
                     return .handled
                 }
-                .onChange(of: token) { selected = 0 }
+                // 첫 `/` 는 바로, 이어지는 타자는 멈춘 뒤 한 번만 찾는다. 명령 목록이 새로 읽히면 다시 찾는다.
+                .task(id: "\(token ?? "\u{0}")#\(commands.count)") {
+                    guard let token else { return show([], for: nil) }
+                    if shownFor != nil {
+                        try? await Task.sleep(for: SearchTiming.debounce)
+                        if Task.isCancelled { return }
+                    }
+                    show(CommandCatalog.suggestions(token, in: commands), for: token)
+                }
             if !list.isEmpty {
                 CommandList(items: list, selected: current, visibleRows: 6) {
                     text = CommandCatalog.complete(text, with: $0.name)
@@ -892,6 +900,17 @@ struct PromptEditor: View {
             }
         }
     }
+
+    private func show(_ list: [ClaudeCommand], for token: String?) {
+        if shownFor != token { selected = 0 }
+        shown = list
+        shownFor = token
+    }
+}
+
+/// 검색 칸·자동완성 디바운스 — 타자가 이만큼 멈추면 찾는다.
+enum SearchTiming {
+    static let debounce: Duration = .milliseconds(80)
 }
 
 /// 명령 후보 줄 — 이름 · 설명 · 출처. 고른 줄은 칠하고, 줄이 많으면 `visibleRows` 높이에서 스크롤한다.
@@ -905,7 +924,7 @@ struct CommandList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) { // 후보가 수백 개여도 보이는 줄만 그린다
                     ForEach(Array(items.enumerated()), id: \.element.id) { i, c in
                         Button { pick(c) } label: { CommandRow(command: c) }
                             .buttonStyle(.icon)
@@ -931,17 +950,22 @@ struct CommandRow: View {
     let command: ClaudeCommand
 
     var body: some View {
+        // 줄이 칸 폭을 넘지 않게 모두 줄어들 수 있다. 줄어드는 순서는 설명(최소 56) → 이름 → 출처(최대 110).
         HStack(spacing: 6) {
             Text("/" + command.name).font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(.primary).lineLimit(1).fixedSize()
+                .foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                .layoutPriority(2)
             Text(command.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            Spacer(minLength: 4)
+                .frame(minWidth: command.detail.isEmpty ? 0 : 56, maxWidth: .infinity, alignment: .leading)
             if !command.modelInvocable {
                 Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
                     .help("받는 Claude 가 스스로 부를 수 없음 — 명령만 그대로 보낼 때만 실행")
             }
-            Text(command.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            Text(command.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                .frame(maxWidth: 110, alignment: .trailing)
+                .layoutPriority(3)
         }
+        .help("/" + command.name + (command.detail.isEmpty ? "" : " — " + command.detail))
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
@@ -953,13 +977,22 @@ struct CommandBrowser: View {
     let pick: (ClaudeCommand) -> Void
     @State private var query = ""
     @State private var selected = 0
+    @State private var found: [ClaudeCommand]?
+    @State private var foundFor = ""
+
+    func search(_ q: String) -> [ClaudeCommand] {
+        q.isEmpty ? commands : CommandCatalog.match(q, in: commands, limit: commands.count)
+    }
 
     var body: some View {
-        let list = query.isEmpty ? commands : CommandCatalog.match(query, in: commands, limit: 200)
+        let list = found ?? commands
         let current = list.isEmpty ? 0 : min(selected, list.count - 1)
         VStack(alignment: .leading, spacing: 8) {
             SearchField(text: $query, prompt: "명령·스킬 \(commands.count)개에서 찾기") { press in
+                if foundFor != query { found = search(query); foundFor = query; selected = 0 } // 디바운스를 기다리지 않고 지금 검색어로
+                let list = found ?? commands
                 guard !list.isEmpty else { return .ignored }
+                let current = min(selected, list.count - 1)
                 switch press.key {
                 case .downArrow: selected = CommandCatalog.step(current, by: 1, count: list.count)
                 case .upArrow: selected = CommandCatalog.step(current, by: -1, count: list.count)
@@ -968,7 +1001,15 @@ struct CommandBrowser: View {
                 }
                 return .handled
             }
-            .onChange(of: query) { selected = 0 }
+            .task(id: query) {
+                if !query.isEmpty {
+                    try? await Task.sleep(for: SearchTiming.debounce)
+                    if Task.isCancelled { return }
+                }
+                if foundFor != query { selected = 0 }
+                found = search(query)
+                foundFor = query
+            }
             CommandList(items: list, selected: current, visibleRows: 12, pick: pick)
             Text("↑↓ 고르기 · return 넣기").font(.caption2).foregroundStyle(.secondary)
         }
