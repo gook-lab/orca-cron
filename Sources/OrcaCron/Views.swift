@@ -153,11 +153,11 @@ struct ListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center, spacing: 8) {
-                Text("예약").font(.system(size: 14, weight: .semibold))
-                if let n = model.nextUp {
-                    Text("다음 \(TimeText.short(n.at)) · \(n.name)")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            HStack(alignment: .center, spacing: 10) {
+                AppLogo(size: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("OrcaCron").font(.system(size: 14, weight: .bold))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 }
                 Spacer(minLength: 6)
                 UpdateChip(model: model)
@@ -229,6 +229,9 @@ struct ListView: View {
                     Button("데이터 폴더 열기") { model.openFolder() }
                     Button("실행 기록(log.txt) 열기") { model.openLog() }
                     Divider()
+                    Button("OrcaCron 정보") { AboutPanel.show() }
+                    Button("도움말(GitHub)") { NSWorkspace.shared.open(AboutPanel.homepage) }
+                    Divider()
                     Button("종료") { NSApplication.shared.terminate(nil) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -236,11 +239,18 @@ struct ListView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .hoverHighlight()
             }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, Pad.h).padding(.vertical, 10)
+            .buttonStyle(.icon)
+            .padding(.horizontal, Pad.h - 4).padding(.vertical, 8)
         }
         .onAppear { model.checkUpdateIfStale() }
+    }
+
+    var subtitle: String {
+        let count = model.store.schedules.filter { !$0.isOneShot }.count
+        guard let n = model.nextUp else { return count == 0 ? "예약 없음 — 터미널 줄의 📅+ 로 만드세요" : "켜진 예약 없음" }
+        return "다음 \(TimeText.short(n.at)) · \(n.name)"
     }
 
     func groupHeader(_ g: TerminalGroup) -> some View {
@@ -265,11 +275,10 @@ struct ListView: View {
                     Image(systemName: showAllIdle ? "chevron.up" : "chevron.down")
                     Text(showAllIdle ? "접기" : "\(idle.count - Self.idlePreview)개 더 보기")
                 }
-                .font(.caption).foregroundStyle(.secondary)
-                .contentShape(Rectangle())
+                .font(.caption)
             }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, Pad.h).padding(.top, 6)
+            .buttonStyle(.icon)
+            .padding(.horizontal, Pad.h - 4).padding(.top, 4)
         }
     }
 }
@@ -301,7 +310,7 @@ struct UpdateChip: View {
                 .font(.caption)
                 .foregroundStyle(model.updateMessage != nil ? Color.red : Color.secondary)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.icon)
             .fixedSize()
             .help(help)
         }
@@ -328,7 +337,7 @@ struct UpdateBanner: View {
                         Text("업데이트가 있습니다 — 새 커밋 \(update.behind)개").font(.caption.weight(.semibold))
                         Spacer(minLength: 6)
                         Button("변경 내용") { NSWorkspace.shared.open(Updater.changelogURL) }
-                            .buttonStyle(.borderless).font(.caption)
+                            .buttonStyle(.icon).font(.caption)
                     }
                     ForEach(update.subjects, id: \.self) { subject in
                         Text("· " + subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -369,9 +378,9 @@ struct GroupHeader: View {
                 Button(action: onAdd) { Image(systemName: "calendar.badge.plus") }.help("이 터미널에 예약 만들기")
             }
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.icon)
         .font(.caption)
-        .padding(.horizontal, Pad.h).padding(.top, empty ? 5 : 12).padding(.bottom, empty ? 3 : 4)
+        .padding(.leading, Pad.h).padding(.trailing, Pad.h - 4).padding(.top, empty ? 3 : 10).padding(.bottom, empty ? 1 : 2)
     }
 }
 
@@ -380,6 +389,7 @@ struct ScheduleRow: View {
     let schedule: Schedule
     let onEdit: () -> Void
     @State private var confirmDelete = false
+    @State private var hover = false
 
     var body: some View {
         let s = schedule
@@ -398,8 +408,11 @@ struct ScheduleRow: View {
                 Text(scheduleLine(s)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 statusLine(s)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { if !s.isOneShot { onEdit() } }
+            .help(s.isOneShot ? "" : "누르면 편집")
             Spacer(minLength: 4)
-            HStack(spacing: 6) {
+            HStack(spacing: 2) {
                 if !s.isOneShot {
                     Button { model.runNow(s.id) } label: { Image(systemName: "play.fill") }
                         .help("지금 실행 — 터미널이 비면 바로 보냅니다")
@@ -420,10 +433,11 @@ struct ScheduleRow: View {
                 }
                 .help(s.isOneShot && s.pendingSince != nil ? "보내기 취소 — 한 번 더 누르면 지웁니다" : "삭제 — 한 번 더 누르면 지웁니다")
             }
-            .buttonStyle(.borderless)
-            .padding(.top, 1)
+            .buttonStyle(.icon)
         }
-        .padding(.horizontal, Pad.h).padding(.vertical, 7)
+        .padding(.leading, Pad.h).padding(.trailing, Pad.h - 4).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.05 : 0)).padding(.horizontal, 6))
+        .onHover { hover = $0 }
     }
 
     func scheduleLine(_ s: Schedule) -> String {
@@ -502,7 +516,7 @@ struct TerminalPicker: View {
             }
             .labelsHidden()
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless).help("터미널 목록 다시 읽기")
+                .buttonStyle(.icon).help("터미널 목록 다시 읽기")
         }
     }
 }
@@ -520,7 +534,7 @@ struct TemplatePicker: View {
             }
             .labelsHidden()
             if let manage {
-                Button("관리", action: manage).buttonStyle(.borderless).font(.caption)
+                Button("관리", action: manage).buttonStyle(.icon).font(.caption)
             }
         }
         if let t = model.tasks.first(where: { $0.key == key }), !t.detail.isEmpty {
@@ -896,12 +910,13 @@ struct TemplatesView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Button { go(.list) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.borderless).help("목록으로")
+                    .buttonStyle(.icon).help("목록으로 (esc)")
+                    .keyboardShortcut(.cancelAction)
                 Text("템플릿").font(.system(size: 14, weight: .semibold))
                 Text("\(model.tasks.count)").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button { go(.template(key: nil)) } label: { Label("새 템플릿", systemImage: "plus") }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.icon)
             }
             .padding(.horizontal, Pad.h).padding(.top, 12).padding(.bottom, 6)
             Text("터미널에 보낼 작업 내용입니다. 할당으로 터미널·시각을 정해 예약을 만들거나, 바로 한 번 보냅니다.")
@@ -952,7 +967,7 @@ struct SearchField: View {
             TextField(prompt, text: $text).textFieldStyle(.plain)
             if !text.isEmpty {
                 Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
-                    .buttonStyle(.borderless).help("검색 지우기")
+                    .buttonStyle(.icon).help("검색 지우기")
             }
         }
         .font(.callout)
@@ -981,7 +996,7 @@ struct TemplateRow: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer(minLength: 8)
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 iconButton("calendar.badge.plus", help: "할당 — 터미널과 시각을 정해 예약 만들기") {
                     go(.edit(model.draft(fromTemplate: template.key), isNew: true))
                 }
@@ -1002,22 +1017,21 @@ struct TemplateRow: View {
                             Image(systemName: "trash")
                         }
                     }
-                    .frame(minWidth: 24, minHeight: 24)
-                    .contentShape(Rectangle())
+                    .frame(minWidth: 18, minHeight: 18)
                 }
                 .disabled(used > 0)
                 .help(used > 0 ? "예약 \(used)개가 쓰는 중이라 지울 수 없습니다" : "삭제 — 한 번 더 누르면 지웁니다")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.icon)
         }
-        .padding(.horizontal, Pad.h).padding(.vertical, 10)
-        .background(hover ? Color.primary.opacity(0.04) : Color.clear)
+        .padding(.leading, Pad.h).padding(.trailing, Pad.h - 4).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.05 : 0)).padding(.horizontal, 6))
         .onHover { hover = $0 }
     }
 
     func iconButton(_ name: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: name).frame(width: 24, height: 24).contentShape(Rectangle())
+            Image(systemName: name).frame(width: 18, height: 18)
         }
         .help(help)
     }

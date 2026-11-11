@@ -16,6 +16,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp .build/release/OrcaCron "$APP/Contents/MacOS/OrcaCron"
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/" # 다시 그리려면 scripts/make-icon.swift
 # 버전 = 1.<커밋 수>. 앱이 업데이트를 스스로 확인하도록 소스 폴더와 커밋을 적어 둔다(Sources/OrcaCron/Updater.swift)
 COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 /usr/libexec/PlistBuddy \

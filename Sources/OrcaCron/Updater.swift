@@ -23,7 +23,7 @@ enum Updater {
     static let changelogURL = URL(string: "https://github.com/gook-lab/orca-cron/blob/main/CHANGELOG.md")!
     static let reinstallHint = "INSTALL.md 링크로 다시 설치하세요"
     // 앱에 들어가는 파일이 바뀐 커밋만 센다 — 문서만 고친 커밋으로는 업데이트를 알리지 않는다
-    private static let appPaths = ["--", "Sources", "Package.swift", "Info.plist", "build.sh"]
+    private static let appPaths = ["--", "Sources", "Resources", "Package.swift", "Info.plist", "build.sh"]
     private static let git = "/usr/bin/git"
 
     static var shortCommit: String { commit.map { String($0.prefix(7)) } ?? "개발 빌드" }
