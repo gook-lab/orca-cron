@@ -561,5 +561,23 @@ do {
     check(nav5.top == .list, "목록에서 뒤로는 그대로")
 }
 
+// MARK: 복제 — 사용자 칸만
+do {
+    var s = schedule("orig", cron: "30 9 * * *; 0 18 * * *")
+    s.clearFirst = true
+    s.lateLimit = 3600
+    s.enabled = false
+    s.lastStatus = "성공"
+    s.history = [RunRecord(at: at(2026, 11, 11, 9, 30), status: "성공", summary: "x")]
+    s.pendingSince = at(2026, 11, 11, 9, 0)
+    s.runId = "r9"
+    let d = s.duplicated(id: "copy", name: "orig 사본")
+    check(d.id == "copy" && d.name == "orig 사본" && d.cron == s.cron && d.task == s.task && d.terminal == s.terminal,
+          "복제는 시각·내용·터미널을 옮김")
+    check(d.clearFirst == true && d.lateLimit == 3600 && d.enabled == false, "복제는 선택 칸도 옮김")
+    check(d.history.isEmpty && d.lastStatus == nil && d.pendingSince == nil && d.runId == nil && d.nextRunAt == nil,
+          "복제는 실행 기록·대기 상태를 비움")
+}
+
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")
 exit(failures == 0 ? 0 : 1)

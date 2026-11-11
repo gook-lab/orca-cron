@@ -21,6 +21,12 @@ struct TerminalGroup: Identifiable {
     static func isFinishedOneShot(_ s: Schedule) -> Bool { s.isOneShot && s.pendingSince == nil && s.runId == nil }
 }
 
+struct UndoAction {
+    let id = UUID()
+    let message: String
+    let run: () -> Void
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var store = StoreFile()
@@ -32,6 +38,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var updateMessage: String? // 확인 실패·설치 실패 이유
     @Published private(set) var checkingUpdate = false
     @Published private(set) var lastUpdateCheck: Date?
+    /// 방금 지운 것을 되돌리는 동작(8초 동안 목록 아래에 보인다).
+    @Published private(set) var undo: UndoAction?
 
     let paths: Paths
     /// false 면 화면만 채우고 아무것도 보내지 않는다(preview 용).
@@ -209,9 +217,44 @@ final class AppModel: ObservableObject {
         tick()
     }
 
-    func delete(_ id: String) {
-        store.schedules.removeAll { $0.id == id }
+    /// 지운 뒤 8초 동안 「되돌리기」를 보여 준다. 끝난 보내기 기록처럼 되돌릴 필요가 없으면 undoable = false.
+    func delete(_ id: String, undoable: Bool = true) {
+        guard let i = store.schedules.firstIndex(where: { $0.id == id }) else { return }
+        let removed = store.schedules.remove(at: i)
         persist()
+        guard undoable else { return }
+        offerUndo(removed.isOneShot && removed.pendingSince != nil ? "「\(removed.name)」 보내기를 취소했습니다" : "「\(removed.name)」 예약을 지웠습니다") { [weak self] in
+            guard let self, !self.store.schedules.contains(where: { $0.id == removed.id }) else { return }
+            self.store.schedules.insert(removed, at: min(i, self.store.schedules.count))
+            self.persist()
+        }
+    }
+
+    private func offerUndo(_ message: String, _ run: @escaping () -> Void) {
+        let action = UndoAction(message: message, run: run)
+        undo = action
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            if self?.undo?.id == action.id { self?.undo = nil }
+        }
+    }
+
+    func performUndo() {
+        let action = undo
+        undo = nil
+        action?.run()
+    }
+
+    func dismissUndo() { undo = nil }
+
+    /// 사용자 칸만 같은 새 예약 초안(편집 화면에서 저장해야 생긴다).
+    func duplicateDraft(_ s: Schedule) -> Schedule {
+        s.duplicated(id: "s-" + String(UUID().uuidString.prefix(8)).lowercased(), name: s.name + " 사본")
+    }
+
+    /// 이 예약이 터미널에 실제로 보낼 글(실행 id 자리는 표시만).
+    func messagePreview(_ s: Schedule) -> String {
+        let text = Engine.message(for: s, runId: "<실행 id>", config: EngineConfig(cliPath: cliPath, tasksDir: paths.tasks))
+        return s.clearFirst == true ? "/clear\n— 화면이 다시 조용해지면 —\n" + text : text
     }
 
     func setEnabled(_ id: String, _ on: Bool) {
@@ -239,8 +282,9 @@ final class AppModel: ObservableObject {
 
     func newDraft(terminal handle: String? = nil) -> Schedule {
         let t = terminals.first { $0.handle == handle } ?? terminals.first
+        // 첫 템플릿을 골라 두므로 이름도 그 제목으로 채운다(템플릿을 바꾸면 이름도 따라 바뀐다).
         return Schedule(id: "s-" + String(UUID().uuidString.prefix(8)).lowercased(),
-                        name: "",
+                        name: tasks.first?.title ?? "",
                         terminal: t?.ref ?? TerminalRef(handle: "", label: ""),
                         cron: "0 9 * * *",
                         task: tasks.first?.key)
@@ -288,8 +332,15 @@ final class AppModel: ObservableObject {
 
     func deleteTemplate(_ key: String) {
         guard usage(of: key) == 0 else { return }
+        let saved = template(key)
         try? Store.deleteTemplate(key, paths)
         tasks = Store.listTasks(paths)
+        guard let saved else { return }
+        offerUndo("「\(saved.title)」 템플릿을 지웠습니다") { [weak self] in
+            guard let self else { return }
+            try? Store.writeTemplate(key, saved, self.paths)
+            self.tasks = Store.listTasks(self.paths)
+        }
     }
 
     /// 이 템플릿을 쓰는 예약 수(지우기 막음).

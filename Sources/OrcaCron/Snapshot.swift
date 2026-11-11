@@ -19,6 +19,9 @@ enum Preview {
             switch which {
             case "edit": screen = first.map { .edit($0, isNew: false) } ?? .list
             case "new": screen = .edit(model.newDraft(), isNew: true)
+            case "undo":
+                if let s = model.store.schedules.first(where: { !$0.isOneShot }) { model.delete(s.id) }  // 미리보기는 저장하지 않는다
+                screen = .list
             case "multi":
                 var d = model.newDraft()
                 d.name = "하루 두 번 점검"

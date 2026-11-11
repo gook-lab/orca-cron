@@ -89,6 +89,16 @@ public struct Schedule: Codable, Equatable, Identifiable, Sendable {
         self.history = []
     }
 
+    /// 사용자 칸만 옮긴 새 예약 — 실행 기록·대기 상태는 비어 있다(「복제」).
+    public func duplicated(id newId: String, name newName: String) -> Schedule {
+        var s = Schedule(id: newId, name: newName, terminal: terminal, cron: cron, enabled: enabled, task: task, prompt: prompt)
+        s.oneShot = oneShot
+        s.track = track
+        s.lateLimit = lateLimit
+        s.clearFirst = clearFirst
+        return s
+    }
+
     mutating func record(_ r: RunRecord) {
         lastStatus = r.status
         lastSummary = r.summary

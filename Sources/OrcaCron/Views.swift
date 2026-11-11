@@ -230,12 +230,14 @@ struct ListView: View {
             } else {
                 let list = ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        if !model.store.schedules.contains(where: { !$0.isOneShot }) { FirstRunHint() }
                         ForEach(active) { g in
                             let folded = collapsed.contains(g.key)
                             groupHeader(g, collapsed: folded, onToggle: g.schedules.isEmpty ? nil : { toggle(g) })
                             if !folded {
                                 ForEach(g.schedules.filter { !TerminalGroup.isFinishedOneShot($0) }) { s in
-                                    ScheduleRow(model: model, schedule: s, onEdit: { go(.edit(s, isNew: false)) })
+                                    ScheduleRow(model: model, schedule: s, onEdit: { go(.edit(s, isNew: false)) },
+                                                onDuplicate: { go(.edit(model.duplicateDraft(s), isNew: true)) })
                                 }
                                 let sent = g.schedules.filter(TerminalGroup.isFinishedOneShot)
                                 if !sent.isEmpty { SentHistory(model: model, items: sent) }
@@ -254,20 +256,26 @@ struct ListView: View {
                 }
             }
 
+            UndoBanner(model: model)
+
             Divider()
 
             HStack(spacing: 14) {
                 Button { go(.edit(model.newDraft(), isNew: true)) } label: { Label("예약", systemImage: "plus") }
-                    .help("새 예약")
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help("새 예약 (⌘N)")
                 Button { go(.send(handle: model.terminals.first?.handle ?? "", task: nil)) } label: {
                     Label("보내기", systemImage: "paperplane")
                 }
-                .help("터미널에 지금 한 번 보내기")
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .help("터미널에 지금 한 번 보내기 (⇧⌘N)")
                 Button { go(.templates) } label: { Label("템플릿", systemImage: "doc.text") }
-                    .help("템플릿 만들기·고치기·터미널에 할당")
+                    .keyboardShortcut("t", modifiers: .command)
+                    .help("템플릿 만들기·고치기·터미널에 할당 (⌘T)")
                 Spacer()
                 Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("지금 다시 확인")
+                    .keyboardShortcut("r", modifiers: .command)
+                    .help("지금 다시 확인 (⌘R)")
                 Menu {
                     if !windowed { Button("창으로 열기", action: openWindow) }
                     Picker("알림", selection: $notifyLevel) {
@@ -540,7 +548,7 @@ struct SentHistory: View {
                         Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.history.first?.at ?? s.lastRunAt ?? s.sentAt))")
                             .font(.caption2).foregroundStyle(.secondary).fixedSize()
                         Spacer(minLength: 4)
-                        Button { model.delete(s.id) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                        Button { model.delete(s.id, undoable: false) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
                             .buttonStyle(.icon).help("기록 지우기 (24시간 뒤 자동으로 지워집니다)")
                     }
                     .padding(.leading, Pad.h + 32).padding(.trailing, Pad.h - 4)
@@ -554,7 +562,7 @@ struct ScheduleRow: View {
     @ObservedObject var model: AppModel
     let schedule: Schedule
     let onEdit: () -> Void
-    @State private var confirmDelete = false
+    let onDuplicate: () -> Void
     @State private var hover = false
     @State private var showHistory = false
 
@@ -594,26 +602,33 @@ struct ScheduleRow: View {
                         .disabled(!s.enabled || s.pendingSince != nil || s.runId != nil)
                     Button(action: onEdit) { Image(systemName: "pencil") }.help("편집")
                 }
-                Button {
-                    if confirmDelete { model.delete(s.id) } else {
-                        confirmDelete = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { confirmDelete = false }
-                    }
-                } label: {
-                    if confirmDelete {
-                        Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(Color.bad)
-                    } else {
-                        Image(systemName: "trash")
-                    }
-                }
-                .help(s.isOneShot && s.pendingSince != nil ? "보내기 취소 — 한 번 더 누르면 지웁니다" : "삭제 — 한 번 더 누르면 지웁니다")
+                Button { model.delete(s.id) } label: { Image(systemName: "trash") }
+                    .help(s.isOneShot && s.pendingSince != nil ? "보내기 취소 — 아래 「되돌리기」로 되살립니다" : "삭제 — 아래 「되돌리기」로 되살립니다")
             }
             .buttonStyle(.icon)
         }
+        .contextMenu { menu(s) }
         .font(.system(size: 11))
         .padding(.leading, Pad.h).padding(.trailing, Pad.h - 4).padding(.vertical, 5)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.05 : 0)).padding(.horizontal, 6))
         .onHover { hover = $0 }
+    }
+
+    /// 우클릭 메뉴 — 줄의 버튼과 같은 동작 + 켜기·끄기 · 복제 · 터미널로 가기.
+    @ViewBuilder
+    func menu(_ s: Schedule) -> some View {
+        if !s.isOneShot {
+            Button("편집", action: onEdit)
+            Button("지금 실행") { model.runNow(s.id) }
+                .disabled(!s.enabled || s.pendingSince != nil || s.runId != nil)
+            Button(s.enabled ? "끄기" : "켜기") { model.setEnabled(s.id, !s.enabled) }
+            Button("복제", action: onDuplicate)
+            Divider()
+        }
+        Button("Orca 에서 이 터미널 보기") { model.focus(s.terminal.handle) }
+            .disabled(!model.terminals.contains { $0.handle == s.terminal.handle })
+        Divider()
+        Button(s.isOneShot && s.pendingSince != nil ? "보내기 취소" : "삭제", role: .destructive) { model.delete(s.id) }
     }
 
     /// 언제 — 다음 실행 시각을 앞에 진하게, 반복 규칙은 뒤에(넘치면 규칙 쪽이 잘린다).
@@ -928,20 +943,105 @@ struct CommandNote: View {
     }
 }
 
+/// 폼 아래 줄 — 저장이 꺼져 있으면 왼쪽에 이유를 적고, 입력이 있는데 취소(esc)하면 한 번 더 확인한다.
 struct FormFooter: View {
     let primary: String
     let enabled: Bool
+    /// 저장·보내기가 꺼진 이유.
+    var note: String?
+    /// 입력이 바뀌었는지 — 그러면 취소를 한 번 더 눌러야 버린다.
+    var dirty = false
     let cancel: () -> Void
     let submit: () -> Void
+    @State private var confirmDiscard = false
 
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
+            if confirmDiscard {
+                Text("입력한 내용이 사라집니다").font(.caption).foregroundStyle(Color.bad)
+            } else if !enabled, let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
-            Button("취소", action: cancel).keyboardShortcut(.cancelAction)
+            Button(confirmDiscard ? "버리기" : "취소") {
+                if dirty && !confirmDiscard {
+                    confirmDiscard = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { confirmDiscard = false }
+                } else {
+                    cancel()
+                }
+            }
+            .keyboardShortcut(.cancelAction)
             Button(primary, action: submit)
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .disabled(!enabled)
+                .help("\(primary) (⌘↩)")
+        }
+    }
+}
+
+/// 「보낼 글 보기」 — 터미널에 실제로 들어갈 글(템플릿이면 파일을 읽으라는 한 줄 + 결과 명령)을 보여 준다.
+struct MessagePreview: View {
+    let text: () -> String
+    @State private var open = false
+
+    var body: some View {
+        Button { open = true } label: { Label("보낼 글 보기", systemImage: "eye") }
+            .buttonStyle(.icon).font(.caption)
+            .help("터미널에 실제로 들어갈 글을 봅니다")
+            .popover(isPresented: $open, arrowEdge: .bottom) {
+                ScrollView {
+                    Text(text())
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .frame(width: 360)
+                .frame(maxHeight: 260)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+    }
+}
+
+/// 예약이 하나도 없을 때 목록 맨 위에 두는 시작 안내.
+struct FirstRunHint: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("처음 쓰신다면").font(.caption.weight(.semibold))
+            Text("터미널 줄의 \(Image(systemName: "calendar.badge.plus")) 로 예약을, \(Image(systemName: "paperplane")) 로 한 번 보내기를 만듭니다. 받는 Claude 가 결과까지 남기는지는 터미널 줄 우클릭 → 「연결 시험 보내기」로 먼저 확인해 보세요.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+        .padding(.horizontal, Pad.h - 6).padding(.top, 8)
+    }
+}
+
+/// 방금 지운 것을 되돌리는 줄 — 8초 뒤 사라진다.
+struct UndoBanner: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if let undo = model.undo {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.uturn.backward.circle").foregroundStyle(.secondary)
+                Text(undo.message).font(.caption).lineLimit(1)
+                Spacer(minLength: 4)
+                Button("되돌리기") { model.performUndo() }
+                    .buttonStyle(.icon).font(.caption.weight(.semibold))
+                    .keyboardShortcut("z", modifiers: .command)
+                    .help("되돌리기 (⌘Z)")
+                Button { model.dismissUndo() } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                    .buttonStyle(.icon).help("닫기")
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.07)))
+            .padding(.horizontal, Pad.h - 6).padding(.vertical, 6)
+            .transition(.opacity)
         }
     }
 }
@@ -992,6 +1092,8 @@ struct EditView: View {
     @State private var multiWeekdays: Bool
     @State private var every: Int
     @State private var cronText: String
+    /// 처음 연 때의 값 — 취소할 때 바뀐 것이 있는지 본다.
+    @State private var initial: Schedule?
 
     init(model: AppModel, draft: Schedule, isNew: Bool, go: @escaping (Screen) -> Void, back: @escaping () -> Void,
          openTemplate: @escaping (String?, Schedule) -> Void) {
@@ -1108,8 +1210,14 @@ struct EditView: View {
         useTemplate ? !(draft.task ?? "").isEmpty : !(draft.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var valid: Bool {
-        !draft.name.trimmingCharacters(in: .whitespaces).isEmpty && !draft.terminal.handle.isEmpty && parsed != nil && contentOK
+    var valid: Bool { invalidReason == nil }
+
+    var invalidReason: String? {
+        if draft.name.trimmingCharacters(in: .whitespaces).isEmpty { return "이름을 적어 주세요" }
+        if draft.terminal.handle.isEmpty { return "터미널을 골라 주세요" }
+        if !contentOK { return useTemplate ? "템플릿을 골라 주세요" : "보낼 글을 적어 주세요" }
+        if parsed == nil { return "시각을 확인해 주세요" }
+        return nil
     }
 
     var body: some View {
@@ -1136,6 +1244,7 @@ struct EditView: View {
                                      commands: model.commands(forTerminal: draft.terminal.handle))
                         if draft.isCommand { CommandNote() }
                     }
+                    if contentOK { MessagePreview { model.messagePreview(current) } }
                 }
                 FormRow(title: "시각") {
                     timeRow
@@ -1165,12 +1274,14 @@ struct EditView: View {
                 }
             }
 
-            FormFooter(primary: "저장", enabled: valid, cancel: back, submit: save)
+            FormFooter(primary: "저장", enabled: valid, note: invalidReason, dirty: initial.map { $0 != current } ?? false,
+                       cancel: back, submit: save)
         }
         .padding(Pad.form)
         .onChange(of: draft.terminal.handle) { _, new in
             if let t = model.terminals.first(where: { $0.handle == new }) { draft.terminal = t.ref }
         }
+        .onAppear { if initial == nil { initial = current } }
         .onChange(of: mode) { old, new in
             // 「매일 09:30」에서 「하루 여러 번」으로 바꾸면 09:30 을 첫 칸으로 둔다.
             guard new == .multi, [.daily, .weekdays].contains(old) else { return }
@@ -1338,6 +1449,24 @@ struct SendView: View {
 
     var isCommand: Bool { !useTemplate && text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
 
+    var invalidReason: String? {
+        if handle.isEmpty { return "터미널을 골라 주세요" }
+        if useTemplate ? task == nil : text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return useTemplate ? "템플릿을 골라 주세요" : "보낼 글을 적어 주세요"
+        }
+        return nil
+    }
+
+    /// 보낼 때 만들어질 1회 보내기(미리보기용).
+    var oneShot: Schedule {
+        var s = Schedule(id: "preview", name: useTemplate ? (model.taskTitle(task) ?? "") : "보내기",
+                         terminal: TerminalRef(handle: handle, label: ""), cron: "",
+                         task: useTemplate ? task : nil, prompt: useTemplate ? nil : text)
+        s.oneShot = true
+        s.track = track
+        return s
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("터미널에 보내기").font(.system(size: 14, weight: .semibold))
@@ -1365,6 +1494,7 @@ struct SendView: View {
                         PromptEditor(text: $text, height: 110, commands: model.commands(forTerminal: handle))
                         if isCommand { CommandNote() }
                     }
+                    if invalidReason == nil { MessagePreview { model.messagePreview(oneShot) } }
                 }
                 FormRow(title: "결과") {
                     Toggle("끝나면 결과를 메뉴바에 남기게 하기", isOn: $track).toggleStyle(.checkbox)
@@ -1381,7 +1511,8 @@ struct SendView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            FormFooter(primary: "보내기", enabled: valid, cancel: cancel) {
+            FormFooter(primary: "보내기", enabled: valid, note: invalidReason,
+                       dirty: !useTemplate && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, cancel: cancel) {
                 guard valid else { return }
                 model.quickSend(to: handle, text: useTemplate ? "" : text, task: useTemplate ? task : nil, track: track)
                 done()
@@ -1459,6 +1590,7 @@ struct TemplatesView: View {
                     list.frame(maxHeight: Self.popupListHeight).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            UndoBanner(model: model)
         }
     }
 }
@@ -1486,7 +1618,6 @@ struct TemplateRow: View {
     @ObservedObject var model: AppModel
     let template: TaskFile
     let go: (Screen) -> Void
-    @State private var confirmDelete = false
     @State private var hover = false
 
     var body: some View {
@@ -1513,23 +1644,11 @@ struct TemplateRow: View {
                     go(.send(handle: model.terminals.first?.handle ?? "", task: template.key))
                 }
                 iconButton("pencil", help: "편집") { go(.template(key: template.key)) }
-                Button {
-                    if confirmDelete { model.deleteTemplate(template.key) } else {
-                        confirmDelete = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { confirmDelete = false }
-                    }
-                } label: {
-                    Group {
-                        if confirmDelete {
-                            Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(Color.bad)
-                        } else {
-                            Image(systemName: "trash")
-                        }
-                    }
-                    .frame(minWidth: 16, minHeight: 16)
+                Button { model.deleteTemplate(template.key) } label: {
+                    Image(systemName: "trash").frame(width: 16, height: 16)
                 }
                 .disabled(used > 0)
-                .help(used > 0 ? "예약 \(used)개가 쓰는 중이라 지울 수 없습니다" : "삭제 — 한 번 더 누르면 지웁니다")
+                .help(used > 0 ? "예약 \(used)개가 쓰는 중이라 지울 수 없습니다" : "삭제 — 아래 「되돌리기」로 되살립니다")
             }
             .buttonStyle(.icon)
         }
@@ -1555,6 +1674,8 @@ struct TemplateEditView: View {
     @State private var title: String
     @State private var detail: String
     @State private var bodyText: String
+    /// 처음 연 때의 제목·설명·내용 — 취소할 때 바뀐 것이 있는지 본다.
+    let original: [String]
 
     init(model: AppModel, key: String?, done: @escaping (String?) -> Void) {
         self.model = model
@@ -1564,6 +1685,13 @@ struct TemplateEditView: View {
         _title = State(initialValue: t?.title ?? "")
         _detail = State(initialValue: t?.detail ?? "")
         _bodyText = State(initialValue: t?.body ?? "")
+        original = [t?.title ?? "", t?.detail ?? "", t?.body ?? ""]
+    }
+
+    var invalidReason: String? {
+        if title.trimmingCharacters(in: .whitespaces).isEmpty { return "제목을 적어 주세요" }
+        if bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "내용을 적어 주세요" }
+        return nil
     }
 
     var valid: Bool {
@@ -1599,7 +1727,8 @@ struct TemplateEditView: View {
                 }
             }
 
-            FormFooter(primary: "저장", enabled: valid, cancel: { done(nil) }) {
+            FormFooter(primary: "저장", enabled: valid, note: invalidReason, dirty: [title, detail, bodyText] != original,
+                       cancel: { done(nil) }) {
                 guard valid else { return }
                 let saved = model.saveTemplate(key: key, TemplateText(title: title.trimmingCharacters(in: .whitespaces),
                                                                       detail: detail.trimmingCharacters(in: .whitespaces),

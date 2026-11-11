@@ -20,7 +20,7 @@ enum CLI {
           OrcaCron status
           OrcaCron send --terminal <핸들> (--text "<글>" | --template <키>) [--track] [--name "<이름>"]
           OrcaCron test --terminal <핸들>      받는 Claude 가 결과 명령까지 실행하는지 한 번 확인
-          OrcaCron preview <png 경로> [list|collapsed|update|edit|new|multi|send|command|templates|template]
+          OrcaCron preview <png 경로> [list|collapsed|update|undo|edit|new|multi|send|command|templates|template]
 
         """
         FileHandle.standardError.write(Data(text.utf8))
