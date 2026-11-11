@@ -41,7 +41,7 @@ enum Preview {
             }
             let root = which == "command"
                 ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
-                                   text: "/zm-ml", cancel: {}, done: {}).frame(width: 400))
+                                   text: "/zm", cancel: {}, done: {}).frame(width: 400))
                 : AnyView(MenuView(model: model, windowed: false, screen: screen))
             let host = NSHostingView(rootView: root.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),

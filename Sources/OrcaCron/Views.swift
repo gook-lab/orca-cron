@@ -837,14 +837,19 @@ struct PromptEditor: View {
     /// 비어 있지 않으면 `/` 자동완성을 켠다.
     var commands: [ClaudeCommand] = []
     @State private var browsing = false
+    @State private var selected = 0
+
+    var token: String? { commands.isEmpty ? nil : CommandCatalog.trailingToken(text) }
 
     var suggestions: [ClaudeCommand] {
-        guard !commands.isEmpty, let token = CommandCatalog.trailingToken(text) else { return [] }
-        let hits = CommandCatalog.match(token, in: commands, limit: 6)
+        guard let token else { return [] }
+        let hits = CommandCatalog.match(token, in: commands, limit: 200)
         return hits.count == 1 && hits[0].name == token ? [] : hits
     }
 
     var body: some View {
+        let list = suggestions
+        let current = list.isEmpty ? 0 : min(selected, list.count - 1)
         VStack(alignment: .leading, spacing: 4) {
             TextEditor(text: $text)
                 .font(.callout)
@@ -853,15 +858,25 @@ struct PromptEditor: View {
                 .frame(minHeight: height, maxHeight: height)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
-                .onKeyPress(.tab) {
-                    guard let first = suggestions.first else { return .ignored }
-                    text = CommandCatalog.complete(text, with: first.name)
+                // 후보가 떠 있을 때만 ↑↓ 로 고르고 tab·return 으로 넣는다. 후보가 없으면 평소대로 커서 이동·줄바꿈.
+                .onKeyPress(keys: [.upArrow, .downArrow, .tab, .return]) { press in
+                    guard !list.isEmpty, press.modifiers.isDisjoint(with: [.shift, .command, .option, .control]) else {
+                        return .ignored
+                    }
+                    switch press.key {
+                    case .downArrow: selected = CommandCatalog.step(current, by: 1, count: list.count)
+                    case .upArrow: selected = CommandCatalog.step(current, by: -1, count: list.count)
+                    default: text = CommandCatalog.complete(text, with: list[current].name)
+                    }
                     return .handled
                 }
-            if !suggestions.isEmpty {
-                CommandList(items: suggestions) { text = CommandCatalog.complete(text, with: $0.name) }
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-                Text("누르거나 tab 으로 넣기").font(.caption2).foregroundStyle(.secondary)
+                .onChange(of: token) { selected = 0 }
+            if !list.isEmpty {
+                CommandList(items: list, selected: current, visibleRows: 6) {
+                    text = CommandCatalog.complete(text, with: $0.name)
+                }
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                Text("↑↓ 고르기 · tab·return 넣기 · 후보 \(list.count)개").font(.caption2).foregroundStyle(.secondary)
             } else if !commands.isEmpty {
                 Button { browsing = true } label: {
                     Label("/ 명령 넣기", systemImage: "command").font(.caption)
@@ -879,19 +894,36 @@ struct PromptEditor: View {
     }
 }
 
-/// 명령 후보 줄 — 이름 · 설명 · 출처.
+/// 명령 후보 줄 — 이름 · 설명 · 출처. 고른 줄은 칠하고, 줄이 많으면 `visibleRows` 높이에서 스크롤한다.
 struct CommandList: View {
+    static let rowHeight: CGFloat = 22
     let items: [ClaudeCommand]
+    var selected: Int? = nil
+    let visibleRows: Int
     let pick: (ClaudeCommand) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(items) { c in
-                Button { pick(c) } label: { CommandRow(command: c) }
-                    .buttonStyle(.icon)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { i, c in
+                        Button { pick(c) } label: { CommandRow(command: c) }
+                            .buttonStyle(.icon)
+                            .frame(height: Self.rowHeight)
+                            .background(RoundedRectangle(cornerRadius: 6)
+                                .fill(i == selected ? Color.accentColor.opacity(0.22) : .clear))
+                            .id(c.id)
+                    }
+                }
+                .padding(2)
+            }
+            .scrollIndicators(items.count > visibleRows ? .visible : .hidden)
+            .frame(height: CGFloat(min(items.count, visibleRows)) * Self.rowHeight + 4)
+            .onChange(of: selected) {
+                guard let selected, items.indices.contains(selected) else { return }
+                proxy.scrollTo(items[selected].id)
             }
         }
-        .padding(2)
     }
 }
 
@@ -920,14 +952,25 @@ struct CommandBrowser: View {
     let commands: [ClaudeCommand]
     let pick: (ClaudeCommand) -> Void
     @State private var query = ""
+    @State private var selected = 0
 
     var body: some View {
+        let list = query.isEmpty ? commands : CommandCatalog.match(query, in: commands, limit: 200)
+        let current = list.isEmpty ? 0 : min(selected, list.count - 1)
         VStack(alignment: .leading, spacing: 8) {
-            SearchField(text: $query, prompt: "명령·스킬 \(commands.count)개에서 찾기")
-            ScrollView {
-                CommandList(items: query.isEmpty ? commands : CommandCatalog.match(query, in: commands, limit: 200), pick: pick)
+            SearchField(text: $query, prompt: "명령·스킬 \(commands.count)개에서 찾기") { press in
+                guard !list.isEmpty else { return .ignored }
+                switch press.key {
+                case .downArrow: selected = CommandCatalog.step(current, by: 1, count: list.count)
+                case .upArrow: selected = CommandCatalog.step(current, by: -1, count: list.count)
+                case .return: pick(list[current])
+                default: return .ignored
+                }
+                return .handled
             }
-            .frame(height: 260)
+            .onChange(of: query) { selected = 0 }
+            CommandList(items: list, selected: current, visibleRows: 12, pick: pick)
+            Text("↑↓ 고르기 · return 넣기").font(.caption2).foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(width: 380)
@@ -1598,11 +1641,17 @@ struct TemplatesView: View {
 struct SearchField: View {
     @Binding var text: String
     let prompt: String
+    /// 아래 목록을 키보드로 고를 때 ↑↓·return 을 넘겨받는다. 주면 처음 뜰 때 입력 초점도 가져간다.
+    var onKey: ((KeyPress) -> KeyPress.Result)? = nil
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField(prompt, text: $text).textFieldStyle(.plain)
+                .focused($focused)
+                .onKeyPress(keys: [.upArrow, .downArrow, .return]) { press in onKey?(press) ?? .ignored }
+                .onAppear { if onKey != nil { focused = true } }
             if !text.isEmpty {
                 Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                     .buttonStyle(.icon).help("검색 지우기")

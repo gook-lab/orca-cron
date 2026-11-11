@@ -386,6 +386,11 @@ do {
     check(CommandCatalog.trailingToken("a/b") == nil, "경로 중간 / 는 아님")
     check(CommandCatalog.trailingToken("/zm next") == nil, "공백 지나면 끝")
     check(CommandCatalog.complete("실행: /zm-ml", with: "zm-ml-next") == "실행: /zm-ml-next ", "조각을 이름으로 바꿈")
+    check(CommandCatalog.step(0, by: 1, count: 3) == 1, "↓ 다음 줄")
+    check(CommandCatalog.step(2, by: 1, count: 3) == 0, "↓ 끝에서 처음으로")
+    check(CommandCatalog.step(0, by: -1, count: 3) == 2, "↑ 처음에서 끝으로")
+    check(CommandCatalog.step(9, by: 1, count: 3) == 0, "목록이 줄면 끝 줄 기준")
+    check(CommandCatalog.step(0, by: 1, count: 0) == 0, "빈 목록")
 
     let list = [ClaudeCommand(name: "zm-ml-start", detail: "ML 점유", source: "프로젝트", modelInvocable: true),
                 ClaudeCommand(name: "review", detail: "리뷰", source: "내장", modelInvocable: false),

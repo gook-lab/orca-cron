@@ -147,6 +147,12 @@ public enum CommandCatalog {
         return Array((prefixHits + others).prefix(limit))
     }
 
+    /// 후보 목록에서 고른 줄을 ↑↓ 로 옮긴다. 끝에서 넘기면 반대쪽 끝으로 돈다.
+    public static func step(_ index: Int, by delta: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return ((min(max(index, 0), count - 1) + delta) % count + count) % count
+    }
+
     /// 글 끝의 `/조각`을 `/이름 ` 으로 바꾼다.
     public static func complete(_ text: String, with name: String) -> String {
         guard let token = trailingToken(text) else { return text + "/" + name + " " }
