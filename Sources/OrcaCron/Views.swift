@@ -320,7 +320,8 @@ struct ListView: View {
         GroupHeader(group: g, collapsed: collapsed, onToggle: onToggle,
                     onSend: g.live == nil ? nil : { go(.send(handle: g.handle, task: nil)) },
                     onAdd: g.live == nil ? nil : { go(.edit(model.newDraft(terminal: g.handle), isNew: true)) },
-                    onTest: g.live == nil ? nil : { model.sendTest(to: g.handle) })
+                    onTest: g.live == nil ? nil : { model.sendTest(to: g.handle) },
+                    onFocus: g.live == nil ? nil : { model.focus(g.handle) })
     }
 
     /// 예약 없는 터미널 — 처음 4개만, 「더 보기」로 전부.
@@ -433,6 +434,9 @@ struct GroupHeader: View {
     let onSend: (() -> Void)?
     let onAdd: (() -> Void)?
     var onTest: (() -> Void)?
+    /// Orca 의 이 터미널로 가기. 예약 없는 터미널은 머리 줄을 누르면 바로 간다.
+    var onFocus: (() -> Void)?
+    @State private var hover = false
 
     var body: some View {
         let empty = group.schedules.isEmpty
@@ -458,9 +462,12 @@ struct GroupHeader: View {
                 if collapsed { summary }
             }
             .contentShape(Rectangle())
-            .onTapGesture { onToggle?() }
-            .help(onToggle == nil ? "" : collapsed ? "펼치기" : "접기")
+            .onTapGesture { if let onToggle { onToggle() } else { onFocus?() } }
+            .help(onToggle != nil ? (collapsed ? "펼치기" : "접기") : onFocus != nil ? "누르면 Orca 의 이 터미널로 갑니다" : "")
             .contextMenu {
+                if let onFocus {
+                    Button("Orca 에서 이 터미널 보기", action: onFocus)
+                }
                 if let onTest {
                     Button("연결 시험 보내기", action: onTest)
                 }
@@ -474,7 +481,12 @@ struct GroupHeader: View {
         }
         .buttonStyle(.icon)
         .font(.caption)
-        .padding(.leading, Pad.h - 8).padding(.trailing, Pad.h - 4).padding(.top, empty ? 1 : 8).padding(.bottom, empty ? 1 : 2)
+        .padding(.leading, Pad.h - 8).padding(.trailing, Pad.h - 4).padding(.vertical, empty ? 3 : 2)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(Color.primary.opacity(hover && (onToggle != nil || onFocus != nil) ? 0.05 : 0))
+            .padding(.horizontal, 6))
+        .onHover { hover = $0 }
+        .padding(.top, empty ? 0 : 6)
     }
 
     /// 접혀 있을 때 오른쪽 요약 — 예약 수 · 다음 시각 · 대기/실패 수.
@@ -507,16 +519,20 @@ struct SentHistory: View {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold))
-                        .rotationEffect(.degrees(open ? 90 : 0))
-                    Image(systemName: "paperplane").font(.system(size: 9))
+                HStack(spacing: 8) {
+                    // 예약 줄의 스위치 칸(폭 24)에 펼침 표시를 두고, 글자는 예약 이름과 같은 자리에서 시작한다.
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold))
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                        Image(systemName: "paperplane").font(.system(size: 9))
+                    }
+                    .frame(width: 24)
                     Text("보낸 기록 \(items.count)" + (last.map { " · 마지막 \(TimeText.short($0))" } ?? ""))
                 }
                 .font(.caption2)
             }
             .buttonStyle(.icon)
-            .padding(.leading, Pad.h + 24).padding(.top, 1)
+            .padding(.leading, Pad.h - 4).padding(.top, 1)
             if open {
                 ForEach(items) { s in
                     HStack(spacing: 6) {
@@ -527,7 +543,7 @@ struct SentHistory: View {
                         Button { model.delete(s.id) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
                             .buttonStyle(.icon).help("기록 지우기 (24시간 뒤 자동으로 지워집니다)")
                     }
-                    .padding(.leading, Pad.h + 44).padding(.trailing, Pad.h - 4)
+                    .padding(.leading, Pad.h + 32).padding(.trailing, Pad.h - 4)
                 }
             }
         }
@@ -553,10 +569,17 @@ struct ScheduleRow: View {
                     .padding(.top, 2)
                     .help(s.enabled ? "켜짐 — 누르면 끕니다" : "꺼짐 — 누르면 켭니다")
             }
-            VStack(alignment: .leading, spacing: 1) {
+            // 한 줄에 한 가지 — 언제(🕐) · 무엇을(📄, 이름과 같으면 생략) · 마지막 결과. 앞 아이콘 칸 폭을 맞춰 세로로 읽힌다.
+            VStack(alignment: .leading, spacing: 2) {
                 Text(s.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(s.enabled ? .primary : .secondary)
-                Text(scheduleLine(s)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .padding(.bottom, 1)
+                whenLine(s)
+                if let what = whatText(s) {
+                    InfoLine(icon: s.task != nil ? "doc.text" : s.isCommand ? "chevron.left.forwardslash.chevron.right" : "text.alignleft") {
+                        Text(what).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
                 statusLine(s)
                 if showHistory { historyList(s) }
             }
@@ -593,34 +616,55 @@ struct ScheduleRow: View {
         .onHover { hover = $0 }
     }
 
-    func scheduleLine(_ s: Schedule) -> String {
-        let what = s.task.flatMap { model.taskTitle($0) }.map { "템플릿 「\($0)」" }
-            ?? (s.isCommand ? "명령 " + ((s.prompt ?? "").split(separator: " ").first.map(String.init) ?? "") : "직접 입력")
-        if s.isOneShot { return "1회 보내기 · \(what) · " + (s.tracksResult ? "결과 받음" : "결과 안 받음") }
-        let when = Cron(s.cron)?.summary ?? "잘못된 cron: \(s.cron)"
+    /// 언제 — 다음 실행 시각을 앞에 진하게, 반복 규칙은 뒤에(넘치면 규칙 쪽이 잘린다).
+    func whenLine(_ s: Schedule) -> some View {
+        let rule = Cron(s.cron)?.summary ?? "잘못된 cron: \(s.cron)"
         let next = s.nextRunAt ?? Cron(s.cron)?.next(after: Date())
-        return s.enabled ? "\(when) · 다음 \(TimeText.short(next)) · \(what)" : "\(when) · 꺼짐 · \(what)"
+        return InfoLine(icon: s.isOneShot ? "paperplane" : "clock") {
+            if s.isOneShot {
+                Text("1회 보내기 · " + (s.tracksResult ? "결과 받음" : "결과 안 받음")).foregroundStyle(.secondary)
+            } else if s.enabled {
+                Text("다음 \(TimeText.short(next))").foregroundStyle(.primary).monospacedDigit().fixedSize()
+                Text("· \(rule)").foregroundStyle(.secondary).lineLimit(1)
+            } else {
+                Text("꺼짐 · \(rule)").foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .help(s.isOneShot ? "" : "\(rule) · 다음 \(TimeText.short(next))")
+    }
+
+    /// 무엇을 — 템플릿 제목이 예약 이름과 같으면 줄을 생략한다.
+    func whatText(_ s: Schedule) -> String? {
+        if let title = s.task.flatMap({ model.taskTitle($0) }) {
+            return title == s.name ? nil : "템플릿 「\(title)」"
+        }
+        let firstLine = (s.prompt ?? "").split(separator: "\n").first.map(String.init) ?? ""
+        return s.isCommand ? "명령 \(firstLine)" : "직접 입력 · \(firstLine)"
     }
 
     @ViewBuilder
     func statusLine(_ s: Schedule) -> some View {
         if s.pendingSince != nil {
-            Text("대기 중 · \(s.waitNote ?? "다음 확인(30초 안)에 보냅니다")")
-                .font(.caption).foregroundStyle(Color.warn).lineLimit(2)
+            InfoLine(icon: "hourglass", tint: .warn) {
+                Text("대기 중 · \(s.waitNote ?? "다음 확인(30초 안)에 보냅니다")").foregroundStyle(Color.warn).lineLimit(2)
+            }
         } else if s.runId != nil {
             if let b = s.blocked {
-                Text("⚠︎ \(b)").font(.caption).foregroundStyle(Color.warn).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                InfoLine(icon: "exclamationmark.triangle.fill", tint: .warn) {
+                    Text(b).foregroundStyle(Color.warn).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
             } else {
-                Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.sentAt)) · 결과 기록을 기다리는 중")
-                    .font(.caption).foregroundStyle(Color.info).lineLimit(1)
+                InfoLine(icon: "ellipsis.circle", tint: .info) {
+                    Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.sentAt)) · 결과 기록을 기다리는 중")
+                        .foregroundStyle(Color.info).lineLimit(1)
+                }
             }
         } else if let status = s.lastStatus {
-            HStack(spacing: 4) {
+            InfoLine(icon: icon(status), tint: color(status)) {
                 Text("\(status) \(TimeText.short(s.history.first?.at ?? s.lastRunAt))")
-                    .foregroundStyle(color(status))
+                    .foregroundStyle(color(status)).fixedSize()
                 if let sum = s.lastSummary, !sum.isEmpty {
-                    Text("· \(sum)").foregroundStyle(.secondary).lineLimit(1)
+                    Text("· \(sum)").foregroundStyle(.secondary).lineLimit(1).help(sum)
                 }
                 if let link = s.lastLink, let url = URL(string: link) {
                     Link(destination: url) { Image(systemName: "arrow.up.right.square") }
@@ -641,9 +685,19 @@ struct ScheduleRow: View {
                     .help("최근 실행 \(s.history.count)회")
                 }
             }
-            .font(.caption)
         } else {
-            Text("아직 실행 기록 없음").font(.caption).foregroundStyle(.secondary)
+            InfoLine(icon: "circle.dashed") {
+                Text("아직 실행 기록 없음").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    func icon(_ status: String) -> String {
+        switch status {
+        case "성공": return "checkmark.circle.fill"
+        case "실패", "결과 없음": return "xmark.circle.fill"
+        case "건너뜀": return "forward.circle"
+        default: return "paperplane.circle"
         }
     }
 
@@ -679,6 +733,22 @@ struct ScheduleRow: View {
 }
 
 // MARK: 공통 조각
+
+/// 예약 줄의 정보 한 줄 — 앞에 폭이 같은 작은 아이콘 칸을 두어 줄끼리 세로로 맞춘다.
+struct InfoLine<Content: View>: View {
+    let icon: String
+    var tint: Color = .secondary
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: icon).font(.system(size: 9, weight: .medium)).foregroundStyle(tint)
+                .frame(width: 12)
+            HStack(alignment: .firstTextBaseline, spacing: 4) { content }
+        }
+        .font(.caption)
+    }
+}
 
 /// 왼쪽 칸 이름 + 오른쪽 입력 한 줄.
 struct FormRow<Content: View>: View {
@@ -724,16 +794,20 @@ struct TemplatePicker: View {
     let open: (String?) -> Void
 
     var body: some View {
+        // 골랐으면 ✎(그 템플릿 고치기), 비었으면 +(새로 만들기). 새로 만들기는 목록 맨 아래에도 있다.
         HStack(spacing: 2) {
             Dropdown(selection: Binding(get: { key ?? "" }, set: { key = $0.isEmpty ? nil : $0 }),
-                     options: model.tasks.map { (value: $0.key, label: $0.title) }, fill: true)
-            Button { if let key { open(key) } } label: { Image(systemName: "pencil") }
-                .buttonStyle(.icon).disabled(key == nil)
-                .help("이 템플릿 고치기 — 마치면 이 화면으로 돌아옵니다")
-            Button { open(nil) } label: { Image(systemName: "plus") }
-                .buttonStyle(.icon)
-                .help("새 템플릿 만들기 — 저장하면 골라 둔 채 이 화면으로 돌아옵니다")
-            Spacer(minLength: 0)
+                     options: model.tasks.map { (value: $0.key, label: $0.title) }, fill: true,
+                     extra: ("새 템플릿 만들기…", { open(nil) }))
+            if let key {
+                Button { open(key) } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.icon)
+                    .help("이 템플릿 고치기 — 마치면 이 화면으로 돌아옵니다")
+            } else {
+                Button { open(nil) } label: { Image(systemName: "plus") }
+                    .buttonStyle(.icon)
+                    .help("새 템플릿 만들기 — 저장하면 골라 둔 채 이 화면으로 돌아옵니다")
+            }
         }
         if let t = model.tasks.first(where: { $0.key == key }), !t.detail.isEmpty {
             Text(t.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)

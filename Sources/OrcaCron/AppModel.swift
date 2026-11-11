@@ -391,6 +391,20 @@ final class AppModel: ObservableObject {
 
     var screenWarning: String? { Health.screenWarning(store, now: Date()) }
 
+    /// Orca 의 그 터미널 탭으로 간다 — 탭을 앞으로 가져온 뒤 Orca 앱을 활성화한다(팝업은 저절로 닫힌다).
+    func focus(_ handle: String) {
+        guard let port else { return }
+        Task.detached(priority: .userInitiated) {
+            let ok = port.focus(handle)
+            await MainActor.run {
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                NSWorkspace.shared.openApplication(at: port.appURL, configuration: configuration)
+                if !ok { self.refresh() }  // 핸들이 바뀌었을 수 있다 — 목록을 다시 읽는다
+            }
+        }
+    }
+
     /// Claude 터미널마다 판정 결과와 화면 끝 15줄을 파일로 남기고 연다. 화면 내용이 그대로 들어가니 공유 전에 확인해야 한다.
     func saveDiagnosis() {
         guard let port else { return }

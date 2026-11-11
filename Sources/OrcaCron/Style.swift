@@ -158,24 +158,49 @@ struct Dropdown<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(value: Value, label: String)]
     var placeholder = "고르세요"
-    /// true 면 내용 폭까지만 쓰다가 자리가 모자라면 긴 이름의 끝을 줄인다. false 면 내용 폭 그대로.
+    /// true 면 남은 폭을 채운다(긴 이름은 끝을 줄임). false 면 가장 긴 항목 폭으로 고정한다.
+    /// 어느 쪽이든 고른 항목에 따라 칸 폭이 바뀌지 않는다.
     var fill = false
+    /// 목록 맨 아래 구분선 뒤에 붙는 동작 하나(예: 새 템플릿 만들기…).
+    var extra: (label: String, action: () -> Void)?
+
+    var current: String { options.first { $0.value == selection }?.label ?? placeholder }
+    @State private var hover = false
 
     var body: some View {
-        let menu = Menu {
+        Menu {
             ForEach(options.indices, id: \.self) { i in
                 let o = options[i]
                 Toggle(o.label, isOn: Binding(get: { o.value == selection }, set: { if $0 { selection = o.value } }))
             }
+            if let extra {
+                Divider()
+                Button(extra.label, action: extra.action)
+            }
         } label: {
-            Text(options.first { $0.value == selection }?.label ?? placeholder)
-                .lineLimit(1).truncationMode(.tail)
+            HStack(spacing: 6) {
+                if fill {
+                    Text(current).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    // 가장 긴 항목 폭으로 고정 — 고른 항목에 따라 칸이 늘었다 줄었다 하지 않는다.
+                    ZStack(alignment: .leading) {
+                        ForEach(options.indices, id: \.self) { Text(options[$0].label).hidden() }
+                        Text(placeholder).hidden()
+                        Text(current)
+                    }
+                }
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.12 : 0.07)))
+            .contentShape(Rectangle())
+            .onHover { hover = $0 }
         }
-        if fill {
-            menu
-        } else {
-            menu.fixedSize()
-        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: !fill, vertical: true)
     }
 }
 

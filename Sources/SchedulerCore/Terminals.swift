@@ -180,6 +180,17 @@ public struct OrcaCLI: TerminalPort {
         return OrcaCLI.turnStarted(r["result"]) ? .started : .accepted
     }
 
+    /// Orca 화면에서 그 터미널 탭을 앞으로 가져온다(syspulse 의 세션 이동과 같은 `orca terminal switch`).
+    public func focus(_ handle: String) -> Bool {
+        run(["terminal", "switch", "--terminal", handle])?["ok"] as? Bool == true
+    }
+
+    /// CLI 가 들어 있는 Orca 앱(…/Orca.app/Contents/Resources/bin/orca → …/Orca.app).
+    public var appURL: URL {
+        URL(fileURLWithPath: binary).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+    }
+
     /// `result.send.prompt.stages` 에 `turn_started` 가 있으면 에이전트가 턴을 시작한 것까지 본 것이다(Orca 1.4.25x 실측).
     static func turnStarted(_ result: Any?) -> Bool {
         let prompt = ((result as? [String: Any])?["send"] as? [String: Any])?["prompt"] as? [String: Any]
