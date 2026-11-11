@@ -38,12 +38,18 @@ enum Preview {
             }
             let root = which == "command"
                 ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
-                                   text: "/zm-ml", done: {}).frame(width: 400))
+                                   text: "/zm-ml", cancel: {}, done: {}).frame(width: 400))
                 : AnyView(MenuView(model: model, windowed: false, screen: screen))
             let host = NSHostingView(rootView: root.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             window.contentView = host
+            // ORCA_CRON_APPEARANCE=light|dark 로 테마를 정해 그린다(없으면 시스템 설정).
+            switch ProcessInfo.processInfo.environment["ORCA_CRON_APPEARANCE"] {
+            case "light": window.appearance = NSAppearance(named: .aqua)
+            case "dark": window.appearance = NSAppearance(named: .darkAqua)
+            default: break
+            }
             window.orderFront(nil)
             // 터미널 목록을 읽을 시간을 준 뒤 그린다.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {

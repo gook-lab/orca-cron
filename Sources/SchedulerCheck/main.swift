@@ -504,5 +504,62 @@ do {
     check(port.sent.count == 2, "같은 실행에 /clear 를 다시 보내지 않음")
 }
 
+// MARK: 화면 이동 — 뒤로는 들어온 곳으로
+do {
+    let sch = schedule("e", cron: "0 9 * * *")
+    // 예약 편집 → 템플릿 고치기(✎) → 취소: 편집 중이던 입력 그대로 예약 편집으로
+    var nav = RouteStack()
+    nav.go(.edit(sch, isNew: false))
+    var typed = sch
+    typed.name = "고치는 중"
+    typed.cron = "30 9 * * *; 0 18 * * *"
+    nav.openTemplate("daily-report", leaving: .edit(typed, isNew: false))
+    check(nav.top == .template(key: "daily-report"), "✎ 는 그 템플릿 편집으로")
+    nav.finishTemplate(key: "daily-report", saved: nil, title: nil)
+    check(nav.top == .edit(typed, isNew: false), "템플릿 편집 취소 → 입력이 남은 예약 편집으로")
+    nav.back()
+    check(nav.top == .list, "예약 편집 취소 → 목록")
+
+    // 예약 편집 → 새 템플릿(+) → 저장: 만든 템플릿을 골라 둔 채 돌아옴
+    var blank = schedule("n", cron: "0 9 * * *", task: nil)
+    blank.name = ""
+    blank.prompt = "쓰던 글"
+    var nav2 = RouteStack(.edit(blank, isNew: true))
+    nav2.openTemplate(nil, leaving: .edit(blank, isNew: true))
+    nav2.finishTemplate(key: nil, saved: "weekly", title: "주간 정리")
+    if case .edit(let s, let isNew) = nav2.top {
+        check(isNew && s.task == "weekly" && s.prompt == nil && s.name == "주간 정리", "새 템플릿 저장 → 골라 두고 이름 채움")
+    } else { check(false, "새 템플릿 저장 → 예약 편집으로") }
+
+    // 보내기 → 새 템플릿 → 저장: 고른 터미널 그대로, 새 템플릿 골라 둠
+    var nav3 = RouteStack(.send(handle: "term_a", task: nil))
+    nav3.openTemplate(nil, leaving: .send(handle: "term_a", task: nil))
+    nav3.finishTemplate(key: nil, saved: "weekly", title: "주간 정리")
+    check(nav3.top == .send(handle: "term_a", task: "weekly"), "보내기에서 만든 템플릿을 골라 둠")
+
+    // 템플릿 목록 → 할당 → 취소: 템플릿 목록으로 / 저장: 목록으로
+    var nav4 = RouteStack()
+    nav4.go(.templates)
+    nav4.go(.edit(sch, isNew: true))
+    nav4.back()
+    check(nav4.top == .templates, "템플릿에서 연 예약 편집을 취소하면 템플릿 목록으로")
+    nav4.go(.send(handle: "term_a", task: "daily-report"))
+    nav4.back()
+    check(nav4.top == .templates, "템플릿에서 연 보내기를 취소하면 템플릿 목록으로")
+    nav4.go(.edit(sch, isNew: true))
+    nav4.go(.list)
+    check(nav4.top == .list && nav4.stack.isEmpty, "저장하면 목록으로")
+
+    // 템플릿 목록 → 템플릿 편집 → 저장: 템플릿 목록으로(골라 둘 화면 없음)
+    var nav5 = RouteStack(.templates)
+    nav5.go(.template(key: nil))
+    nav5.finishTemplate(key: nil, saved: "x", title: "x")
+    check(nav5.top == .templates, "템플릿 목록에서 만든 템플릿 저장 → 템플릿 목록으로")
+    nav5.back()
+    check(nav5.top == .list, "템플릿 목록 뒤로 → 목록")
+    nav5.back()
+    check(nav5.top == .list, "목록에서 뒤로는 그대로")
+}
+
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")
 exit(failures == 0 ? 0 : 1)

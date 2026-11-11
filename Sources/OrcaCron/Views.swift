@@ -54,8 +54,19 @@ struct MenuBarLabel: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
+    /// 메뉴 막대 아이콘 — 템플릿 이미지라 밝은 막대에선 검게, 어두운 막대에선 희게 그려진다.
+    /// 얇은 `clock` 은 배경에 따라 흐려 보여 채운 모양 · 15pt · semibold 로 둔다.
+    static func icon(attention: Bool) -> NSImage {
+        let name = attention ? "clock.badge.exclamationmark.fill" : "clock.fill"
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "OrcaCron")?
+            .withSymbolConfiguration(config) ?? NSImage()
+        image.isTemplate = true
+        return image
+    }
+
     var body: some View {
-        Image(systemName: model.needsAttention ? "clock.badge.exclamationmark" : "clock")
+        Image(nsImage: MenuBarLabel.icon(attention: model.needsAttention))
             .onAppear {
                 WindowOpener.open = {
                     openWindow(id: "main")
@@ -83,24 +94,28 @@ enum TimeText {
     }
 }
 
-enum Screen: Equatable {
-    case list
-    case edit(Schedule, isNew: Bool)
-    case send(handle: String, task: String?)
-    case templates
-    case template(key: String?)
-}
+typealias Screen = Route
 
+/// 화면 이동은 스택이다 — 앞으로 가면 쌓고, 뒤로·취소는 들어온 화면으로 돌아간다.
+/// 저장·보내기처럼 일을 끝낸 동작은 결과가 보이는 목록으로 간다.
 struct MenuView: View {
     @ObservedObject var model: AppModel
     let windowed: Bool
-    @State private var screen: Screen
+    @State private var nav: RouteStack
     @Environment(\.openWindow) private var openWindow
 
     init(model: AppModel, windowed: Bool, screen: Screen = .list) {
         self.model = model
         self.windowed = windowed
-        _screen = State(initialValue: screen)
+        _nav = State(initialValue: RouteStack(screen))
+    }
+
+    var screen: Screen { nav.top }
+    func go(_ s: Screen) { nav.go(s) }
+    func back() { nav.back() }
+    func openTemplate(_ key: String?, leaving current: Screen) { nav.openTemplate(key, leaving: current) }
+    func finishTemplate(key: String?, saved: String?) {
+        nav.finishTemplate(key: key, saved: saved, title: saved.flatMap { model.taskTitle($0) })
     }
 
     var body: some View {
@@ -113,20 +128,22 @@ struct MenuView: View {
     var content: some View {
         switch screen {
         case .list:
-            ListView(model: model, windowed: windowed, go: { screen = $0 }, openWindow: {
+            ListView(model: model, windowed: windowed, go: go, openWindow: {
                 openWindow(id: "main")
                 NSApp.activate()
             })
         case .edit(let s, let isNew):
-            EditView(model: model, draft: s, isNew: isNew, go: { screen = $0 })
-                .id("edit-\(s.id)-\(isNew)")
+            EditView(model: model, draft: s, isNew: isNew, go: go, back: back,
+                     openTemplate: { key, current in openTemplate(key, leaving: .edit(current, isNew: isNew)) })
+                .id("edit-\(s.id)-\(isNew)-\(s.task ?? "")")
         case .send(let handle, let task):
-            SendView(model: model, handle: handle, task: task) { screen = .list }
+            SendView(model: model, handle: handle, task: task, cancel: back, done: { go(.list) },
+                     openTemplate: { key, h, t in openTemplate(key, leaving: .send(handle: h, task: t)) })
                 .id("send-\(handle)-\(task ?? "")")
         case .templates:
-            TemplatesView(model: model, windowed: windowed, go: { screen = $0 })
+            TemplatesView(model: model, windowed: windowed, go: go, back: back)
         case .template(let key):
-            TemplateEditView(model: model, key: key) { screen = .templates }
+            TemplateEditView(model: model, key: key) { saved in finishTemplate(key: key, saved: saved) }
                 .id("template-\(key ?? "new")")
         }
     }
@@ -185,17 +202,17 @@ struct ListView: View {
                 UpdateBanner(model: model)
                     .padding(.horizontal, Pad.h).padding(.bottom, 10)
             } else if let message = model.updateMessage {
-                Text(message).font(.caption).foregroundStyle(.red)
+                Text(message).font(.caption).foregroundStyle(Color.bad)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Pad.h).padding(.bottom, 8)
             }
 
             if let p = model.problem {
-                Text(p).font(.caption).foregroundStyle(.red)
+                Text(p).font(.caption).foregroundStyle(Color.bad)
                     .padding(.horizontal, Pad.h).padding(.bottom, 8)
             }
             if let w = model.screenWarning {
-                Text(w).font(.caption).foregroundStyle(.orange)
+                Text(w).font(.caption).foregroundStyle(Color.warn)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Pad.h).padding(.bottom, 8)
             }
@@ -348,7 +365,7 @@ struct UpdateChip: View {
         if model.updating {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
-                Text("업데이트 중").font(.caption.weight(.medium)).foregroundStyle(.blue)
+                Text("업데이트 중").font(.caption.weight(.medium)).foregroundStyle(Color.info)
             }
             .fixedSize()
         } else if let update = model.update {
@@ -365,7 +382,7 @@ struct UpdateChip: View {
                     Text("v\(Updater.version)" + (model.updateMessage != nil ? " ⚠︎" : model.checkingUpdate ? "" : " ✓"))
                 }
                 .font(.caption)
-                .foregroundStyle(model.updateMessage != nil ? Color.red : Color.secondary)
+                .foregroundStyle(model.updateMessage != nil ? Color.bad : Color.secondary)
             }
             .buttonStyle(.icon)
             .fixedSize()
@@ -385,7 +402,7 @@ struct UpdateBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Color.info)
             VStack(alignment: .leading, spacing: 3) {
                 if model.updating {
                     Text("업데이트 중… 빌드가 끝나면 앱이 다시 켜집니다(1~2분)").font(.caption.weight(.semibold))
@@ -427,7 +444,7 @@ struct GroupHeader: View {
                     .frame(width: 9)
                     .opacity(onToggle == nil ? 0 : 1)
                 Circle()
-                    .fill(group.live == nil ? Color.red : (empty ? Color.secondary.opacity(0.5) : Color.green))
+                    .fill(group.live == nil ? Color.bad : (empty ? Color.secondary.opacity(0.5) : Color.ok))
                     .frame(width: 7, height: 7)
                 if let t = group.live {
                     Text(t.place.isEmpty ? "터미널" : t.place).font(.caption.weight(.semibold))
@@ -435,7 +452,7 @@ struct GroupHeader: View {
                     Text(t.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else {
                     Text(group.label).font(.caption.weight(.semibold)).lineLimit(1)
-                    Text("터미널 없음 — 편집에서 다시 고르세요").font(.caption).foregroundStyle(.red).lineLimit(1)
+                    Text("터미널 없음 — 편집에서 다시 고르세요").font(.caption).foregroundStyle(Color.bad).lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if collapsed { summary }
@@ -467,8 +484,8 @@ struct GroupHeader: View {
         let waiting = group.schedules.filter { $0.pendingSince != nil }.count
         let failed = recurring.filter { $0.enabled && ["실패", "결과 없음"].contains($0.lastStatus ?? "") }.count
         return HStack(spacing: 4) {
-            if failed > 0 { Text("실패 \(failed)").foregroundStyle(.red) }
-            if waiting > 0 { Text("대기 \(waiting)").foregroundStyle(.orange) }
+            if failed > 0 { Text("실패 \(failed)").foregroundStyle(Color.bad) }
+            if waiting > 0 { Text("대기 \(waiting)").foregroundStyle(Color.warn) }
             Text("예약 \(recurring.count)" + (next.map { " · 다음 \(TimeText.short($0))" } ?? ""))
                 .foregroundStyle(.secondary)
         }
@@ -561,7 +578,7 @@ struct ScheduleRow: View {
                     }
                 } label: {
                     if confirmDelete {
-                        Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(.red)
+                        Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(Color.bad)
                     } else {
                         Image(systemName: "trash")
                     }
@@ -589,14 +606,14 @@ struct ScheduleRow: View {
     func statusLine(_ s: Schedule) -> some View {
         if s.pendingSince != nil {
             Text("대기 중 · \(s.waitNote ?? "다음 확인(30초 안)에 보냅니다")")
-                .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                .font(.caption).foregroundStyle(Color.warn).lineLimit(2)
         } else if s.runId != nil {
             if let b = s.blocked {
-                Text("⚠︎ \(b)").font(.caption).foregroundStyle(.orange).lineLimit(2)
+                Text("⚠︎ \(b)").font(.caption).foregroundStyle(Color.warn).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("\(s.lastStatus ?? "보냄") \(TimeText.short(s.sentAt)) · 결과 기록을 기다리는 중")
-                    .font(.caption).foregroundStyle(.blue).lineLimit(1)
+                    .font(.caption).foregroundStyle(Color.info).lineLimit(1)
             }
         } else if let status = s.lastStatus {
             HStack(spacing: 4) {
@@ -626,7 +643,7 @@ struct ScheduleRow: View {
             }
             .font(.caption)
         } else {
-            Text("아직 실행 기록 없음").font(.caption).foregroundStyle(.tertiary)
+            Text("아직 실행 기록 없음").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -637,7 +654,7 @@ struct ScheduleRow: View {
         return VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(s.history.enumerated()), id: \.offset) { _, r in
                 HStack(spacing: 5) {
-                    Text(f.string(from: r.at)).foregroundStyle(.tertiary).monospacedDigit()
+                    Text(f.string(from: r.at)).foregroundStyle(.secondary).monospacedDigit()
                     Text(r.status).foregroundStyle(color(r.status))
                     if let sum = r.summary, !sum.isEmpty {
                         Text(sum).foregroundStyle(.secondary).lineLimit(1).help(sum)
@@ -654,8 +671,8 @@ struct ScheduleRow: View {
 
     func color(_ status: String) -> Color {
         switch status {
-        case "성공": return .green
-        case "실패", "결과 없음": return .red
+        case "성공": return .ok
+        case "실패", "결과 없음": return .bad
         default: return .secondary
         }
     }
@@ -683,16 +700,17 @@ struct TerminalPicker: View {
     @Binding var handle: String
     var fallbackLabel: String = ""
 
+    var options: [(value: String, label: String)] {
+        var out = model.terminals.map { (value: $0.handle, label: $0.displayName) }
+        if !handle.isEmpty, !model.terminals.contains(where: { $0.handle == handle }) {
+            out.insert((handle, "\(fallbackLabel.isEmpty ? handle : fallbackLabel) (지금 없음)"), at: 0)
+        }
+        return out
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            Picker("", selection: $handle) {
-                if handle.isEmpty { Text("고르세요").tag("") }
-                if !handle.isEmpty, !model.terminals.contains(where: { $0.handle == handle }) {
-                    Text("\(fallbackLabel.isEmpty ? handle : fallbackLabel) (지금 없음)").tag(handle)
-                }
-                ForEach(model.terminals) { t in Text(t.displayName).tag(t.handle) }
-            }
-            .labelsHidden()
+            Dropdown(selection: $handle, options: options, fill: true)
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.icon).help("터미널 목록 다시 읽기")
         }
@@ -702,18 +720,20 @@ struct TerminalPicker: View {
 struct TemplatePicker: View {
     @ObservedObject var model: AppModel
     @Binding var key: String?
-    let manage: (() -> Void)?
+    /// 템플릿 편집으로 간다 — 고른 템플릿 키(고치기) 또는 nil(새로 만들기).
+    let open: (String?) -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Picker("", selection: Binding(get: { key ?? "" }, set: { key = $0.isEmpty ? nil : $0 })) {
-                if (key ?? "").isEmpty { Text("고르세요").tag("") }
-                ForEach(model.tasks) { t in Text(t.title).tag(t.key) }
-            }
-            .labelsHidden()
-            if let manage {
-                Button("관리", action: manage).buttonStyle(.icon).font(.caption)
-            }
+        HStack(spacing: 2) {
+            Dropdown(selection: Binding(get: { key ?? "" }, set: { key = $0.isEmpty ? nil : $0 }),
+                     options: model.tasks.map { (value: $0.key, label: $0.title) }, fill: true)
+            Button { if let key { open(key) } } label: { Image(systemName: "pencil") }
+                .buttonStyle(.icon).disabled(key == nil)
+                .help("이 템플릿 고치기 — 마치면 이 화면으로 돌아옵니다")
+            Button { open(nil) } label: { Image(systemName: "plus") }
+                .buttonStyle(.icon)
+                .help("새 템플릿 만들기 — 저장하면 골라 둔 채 이 화면으로 돌아옵니다")
+            Spacer(minLength: 0)
         }
         if let t = model.tasks.first(where: { $0.key == key }), !t.detail.isEmpty {
             Text(t.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -752,7 +772,7 @@ struct PromptEditor: View {
             if !suggestions.isEmpty {
                 CommandList(items: suggestions) { text = CommandCatalog.complete(text, with: $0.name) }
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-                Text("누르거나 tab 으로 넣기").font(.caption2).foregroundStyle(.tertiary)
+                Text("누르거나 tab 으로 넣기").font(.caption2).foregroundStyle(.secondary)
             } else if !commands.isEmpty {
                 Button { browsing = true } label: {
                     Label("/ 명령 넣기", systemImage: "command").font(.caption)
@@ -799,7 +819,7 @@ struct CommandRow: View {
                 Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
                     .help("받는 Claude 가 스스로 부를 수 없음 — 명령만 그대로 보낼 때만 실행")
             }
-            Text(command.source).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+            Text(command.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -886,6 +906,9 @@ struct EditView: View {
     @State private var draft: Schedule
     let isNew: Bool
     let go: (Screen) -> Void
+    let back: () -> Void
+    /// 템플릿 편집으로 갈 때 지금 입력을 넘긴다.
+    let openTemplate: (String?, Schedule) -> Void
 
     @State private var useTemplate: Bool
     @State private var mode: TimeMode
@@ -896,10 +919,13 @@ struct EditView: View {
     @State private var every: Int
     @State private var cronText: String
 
-    init(model: AppModel, draft: Schedule, isNew: Bool, go: @escaping (Screen) -> Void) {
+    init(model: AppModel, draft: Schedule, isNew: Bool, go: @escaping (Screen) -> Void, back: @escaping () -> Void,
+         openTemplate: @escaping (String?, Schedule) -> Void) {
         self.model = model
         self.isNew = isNew
         self.go = go
+        self.back = back
+        self.openTemplate = openTemplate
         _draft = State(initialValue: draft)
         _useTemplate = State(initialValue: draft.prompt == nil)
         _cronText = State(initialValue: draft.cron)
@@ -1030,7 +1056,7 @@ struct EditView: View {
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                     if useTemplate {
-                        TemplatePicker(model: model, key: $draft.task) { go(.templates) }
+                        TemplatePicker(model: model, key: $draft.task) { openTemplate($0, current) }
                     } else {
                         PromptEditor(text: Binding(get: { draft.prompt ?? "" }, set: { draft.prompt = $0 }),
                                      commands: model.commands(forTerminal: draft.terminal.handle))
@@ -1044,18 +1070,13 @@ struct EditView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text(mode == .every ? "1~59 사이 분을 넣으세요" : "시각 형식이 맞지 않습니다: \(cron)")
-                            .font(.caption).foregroundStyle(.red)
+                            .font(.caption).foregroundStyle(Color.bad)
                     }
                 }
                 FormRow(title: "늦으면") {
-                    Picker("", selection: Binding(get: { draft.lateLimit ?? 0 }, set: { draft.lateLimit = $0 == 0 ? nil : $0 })) {
-                        Text("늦어도 보냄").tag(0.0)
-                        Text("30분 넘게 늦으면 건너뜀").tag(1800.0)
-                        Text("1시간 넘게 늦으면 건너뜀").tag(3600.0)
-                        Text("3시간 넘게 늦으면 건너뜀").tag(10800.0)
-                        Text("6시간 넘게 늦으면 건너뜀").tag(21600.0)
-                    }
-                    .labelsHidden().fixedSize()
+                    Dropdown(selection: Binding(get: { draft.lateLimit ?? 0 }, set: { draft.lateLimit = $0 == 0 ? nil : $0 }),
+                             options: [(0, "늦어도 보냄"), (1800, "30분 넘게 늦으면 건너뜀"), (3600, "1시간 넘게 늦으면 건너뜀"),
+                                       (10800, "3시간 넘게 늦으면 건너뜀"), (21600, "6시간 넘게 늦으면 건너뜀")])
                     Text("맥이 잠들었거나 앱이 꺼져 있던 동안 지나간 시각을 깨어난 뒤 보낼지 정합니다.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1070,7 +1091,7 @@ struct EditView: View {
                 }
             }
 
-            FormFooter(primary: "저장", enabled: valid, cancel: { go(.list) }, submit: save)
+            FormFooter(primary: "저장", enabled: valid, cancel: back, submit: save)
         }
         .padding(Pad.form)
         .onChange(of: draft.terminal.handle) { _, new in
@@ -1092,11 +1113,7 @@ struct EditView: View {
     }
 
     var modePicker: some View {
-        Picker("", selection: $mode) {
-            ForEach(TimeMode.allCases) { Text($0.rawValue).tag($0) }
-        }
-        .labelsHidden()
-        .fixedSize()
+        Dropdown(selection: $mode, options: TimeMode.allCases.map { (value: $0, label: $0.rawValue) })
     }
 
     /// 시각은 한 줄: [방식 ▾] [그 방식의 입력]
@@ -1197,12 +1214,18 @@ struct EditView: View {
         }
     }
 
-    func save() {
-        guard valid else { return }
+    /// 지금 입력 그대로의 예약(저장 전). 템플릿을 고치고 돌아올 때 이 값으로 다시 연다.
+    var current: Schedule {
         var s = draft
-        s.name = s.name.trimmingCharacters(in: .whitespaces)
         s.cron = parsed?.expression ?? cron
         if useTemplate { s.prompt = nil } else { s.task = nil }
+        return s
+    }
+
+    func save() {
+        guard valid else { return }
+        var s = current
+        s.name = s.name.trimmingCharacters(in: .whitespaces)
         model.save(s)
         go(.list)
     }
@@ -1217,11 +1240,17 @@ struct SendView: View {
     @State private var useTemplate: Bool
     @State private var text: String
     @State private var track: Bool
+    let cancel: () -> Void
     let done: () -> Void
+    /// 템플릿 편집으로 갈 때 고른 터미널·템플릿을 넘긴다. nil 이면 템플릿 고치기 버튼이 없다.
+    var openTemplate: ((String?, String, String?) -> Void)?
 
-    init(model: AppModel, handle: String, task: String?, text: String = "", done: @escaping () -> Void) {
+    init(model: AppModel, handle: String, task: String?, text: String = "", cancel: @escaping () -> Void,
+         done: @escaping () -> Void, openTemplate: ((String?, String, String?) -> Void)? = nil) {
         self.model = model
+        self.cancel = cancel
         self.done = done
+        self.openTemplate = openTemplate
         _text = State(initialValue: text)
         _handle = State(initialValue: handle)
         _task = State(initialValue: task)
@@ -1257,7 +1286,7 @@ struct SendView: View {
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                     if useTemplate {
-                        TemplatePicker(model: model, key: $task, manage: nil)
+                        TemplatePicker(model: model, key: $task) { openTemplate?($0, handle, task) }
                     } else {
                         PromptEditor(text: $text, height: 110, commands: model.commands(forTerminal: handle))
                         if isCommand { CommandNote() }
@@ -1278,7 +1307,7 @@ struct SendView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            FormFooter(primary: "보내기", enabled: valid, cancel: done) {
+            FormFooter(primary: "보내기", enabled: valid, cancel: cancel) {
                 guard valid else { return }
                 model.quickSend(to: handle, text: useTemplate ? "" : text, task: useTemplate ? task : nil, track: track)
                 done()
@@ -1294,6 +1323,7 @@ struct TemplatesView: View {
     @ObservedObject var model: AppModel
     let windowed: Bool
     let go: (Screen) -> Void
+    let back: () -> Void
     @State private var query = ""
 
     /// 팝업에서는 처음에 줄 4개쯤 높이로 두고 안을 스크롤한다.
@@ -1311,8 +1341,8 @@ struct TemplatesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Button { go(.list) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.icon).help("목록으로 (esc)")
+                Button(action: back) { Image(systemName: "chevron.left") }
+                    .buttonStyle(.icon).help("뒤로 (esc)")
                     .keyboardShortcut(.cancelAction)
                 Text("템플릿").font(.system(size: 14, weight: .semibold))
                 Text("\(model.tasks.count)").font(.caption).foregroundStyle(.secondary)
@@ -1395,8 +1425,11 @@ struct TemplateRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(used > 0 ? "예약 \(used)개가 사용 중 · \(template.key).md" : "\(template.key).md")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { go(.template(key: template.key)) }
+            .help("누르면 편집")
             Spacer(minLength: 8)
             HStack(spacing: 0) {
                 iconButton("calendar.badge.plus", help: "할당 — 터미널과 시각을 정해 예약 만들기") {
@@ -1414,7 +1447,7 @@ struct TemplateRow: View {
                 } label: {
                     Group {
                         if confirmDelete {
-                            Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(.red)
+                            Text("삭제?").font(.caption.weight(.semibold)).foregroundStyle(Color.bad)
                         } else {
                             Image(systemName: "trash")
                         }
@@ -1443,12 +1476,13 @@ struct TemplateRow: View {
 struct TemplateEditView: View {
     @ObservedObject var model: AppModel
     let key: String?
-    let done: () -> Void
+    /// 저장한 키(취소면 nil)를 넘긴다.
+    let done: (String?) -> Void
     @State private var title: String
     @State private var detail: String
     @State private var bodyText: String
 
-    init(model: AppModel, key: String?, done: @escaping () -> Void) {
+    init(model: AppModel, key: String?, done: @escaping (String?) -> Void) {
         self.model = model
         self.key = key
         self.done = done
@@ -1479,24 +1513,24 @@ struct TemplateEditView: View {
                     if !locked.isEmpty {
                         Text("⚠︎ " + locked.map { "/" + $0.name }.joined(separator: " · ")
                              + " 은(는) 받는 Claude 가 스스로 부를 수 없어 템플릿으로는 실행되지 않습니다(내장 명령·잠긴 스킬). 「보내기」나 예약의 직접 입력에 명령만 넣어 주세요.")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.caption).foregroundStyle(Color.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Text("받는 터미널의 Claude 가 이 내용을 읽고 그대로 실행합니다. 경로·대상을 빠짐없이 적으세요.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let key {
-                        Text("파일: ~/.orca-cron/tasks/\(key).md").font(.caption2).foregroundStyle(.tertiary)
+                        Text("파일: ~/.orca-cron/tasks/\(key).md").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
 
-            FormFooter(primary: "저장", enabled: valid, cancel: done) {
+            FormFooter(primary: "저장", enabled: valid, cancel: { done(nil) }) {
                 guard valid else { return }
-                model.saveTemplate(key: key, TemplateText(title: title.trimmingCharacters(in: .whitespaces),
-                                                          detail: detail.trimmingCharacters(in: .whitespaces),
-                                                          body: bodyText))
-                done()
+                let saved = model.saveTemplate(key: key, TemplateText(title: title.trimmingCharacters(in: .whitespaces),
+                                                                      detail: detail.trimmingCharacters(in: .whitespaces),
+                                                                      body: bodyText))
+                done(saved)
             }
         }
         .padding(Pad.form)

@@ -151,3 +151,44 @@ struct FlowRow: Layout {
         return rows
     }
 }
+
+/// 항상 버튼 아래로 펼쳐지는 선택 칸.
+/// macOS 기본 Picker 는 고른 항목을 버튼 자리에 맞춰 목록을 띄우므로, 아래쪽 항목을 고르면 목록이 위로 올라가 윗줄을 가린다.
+struct Dropdown<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [(value: Value, label: String)]
+    var placeholder = "고르세요"
+    /// true 면 내용 폭까지만 쓰다가 자리가 모자라면 긴 이름의 끝을 줄인다. false 면 내용 폭 그대로.
+    var fill = false
+
+    var body: some View {
+        let menu = Menu {
+            ForEach(options.indices, id: \.self) { i in
+                let o = options[i]
+                Toggle(o.label, isOn: Binding(get: { o.value == selection }, set: { if $0 { selection = o.value } }))
+            }
+        } label: {
+            Text(options.first { $0.value == selection }?.label ?? placeholder)
+                .lineLimit(1).truncationMode(.tail)
+        }
+        if fill {
+            menu
+        } else {
+            menu.fixedSize()
+        }
+    }
+}
+
+// MARK: 상태 색 — 테마별 진하기
+
+extension Color {
+    /// 밝은 테마는 시스템 초록·주황·빨강이 흰 바탕에서 2~3.5:1 로 흐려 진하게 바꾸고(4.5:1 이상), 어두운 테마는 시스템 색을 쓴다.
+    static let ok = themed(light: NSColor(srgbRed: 20 / 255, green: 116 / 255, blue: 50 / 255, alpha: 1), dark: .systemGreen)
+    static let warn = themed(light: NSColor(srgbRed: 160 / 255, green: 78 / 255, blue: 0, alpha: 1), dark: .systemOrange)
+    static let info = themed(light: NSColor(srgbRed: 0, green: 88 / 255, blue: 200 / 255, alpha: 1), dark: .systemBlue)
+    static let bad = themed(light: NSColor(srgbRed: 196 / 255, green: 30 / 255, blue: 28 / 255, alpha: 1), dark: .systemRed)
+
+    static func themed(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light })
+    }
+}
