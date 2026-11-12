@@ -519,6 +519,26 @@ do {
     check(TimeSpec(cron: "0 9 1 * *") == nil, "날짜를 정한 식은 cron 직접")
     check(TimeSpec(cron: "0 9 * * 1; 0 18 * * *") == nil, "식마다 요일이 다르면 cron 직접")
 
+    // 휴일(토·일)
+    let weekend = spec(.weekends, .times([540]))
+    check(weekend.cron == "0 9 * * 0,6", "휴일 cron", weekend.cron ?? "nil")
+    check(weekend.summary == "휴일 09:00", "휴일 설명", weekend.summary)
+    roundTrip(weekend, "휴일")
+    check(TimeSpec(cron: "0 9 * * 6,7")?.days == .weekends, "6,7 도 휴일(7=일)")
+    check(TimeSpec.Days.of([0, 6]) == .weekends, "요일 고르기 토·일 → 휴일")
+    check(next(weekend.cron!, at(2026, 11, 13, 10, 0)) == at(2026, 11, 14, 9, 0), "금요일 다음 휴일 = 토요일")
+    check(spec(.weekends, .every(30, from: 600, to: 720)).summary == "휴일 10:00~12:00 30분마다", "휴일 구간 반복")
+
+    // 시각 칸에 친 글
+    for (text, want) in [("9:30", 570), ("09:30", 570), ("930", 570), ("0930", 570), ("9", 540), ("21", 1260),
+                         ("9시 30분", 570), ("9시", 540), (" 7:05 ", 425), ("7.05", 425), ("7:5", 425), ("0", 0), ("23:59", 1439)] {
+        check(TimeSpec.minute(fromText: text) == want, "시각 글 「\(text)」", "\(String(describing: TimeSpec.minute(fromText: text)))")
+    }
+    for text in ["", "24:00", "9:60", "960", "12345", "abc", "9:30:00", ":30", "1:234"] {
+        check(TimeSpec.minute(fromText: text) == nil, "틀린 시각 글 「\(text)」")
+    }
+    check(TimeSpec.clockText(425) == "07:05" && TimeSpec.clockText(0) == "00:00", "분 → HH:MM")
+
     // 요일 정리 · 막는 값
     check(TimeSpec.Days.of(Set(1...5)) == .weekdays && TimeSpec.Days.of(Set(0...6)) == .everyDay, "요일 고르기 → 평일·매일")
     check(spec(.some([]), .times([540])).cron == nil, "요일 없음")

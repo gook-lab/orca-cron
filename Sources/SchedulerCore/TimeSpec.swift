@@ -8,6 +8,8 @@ public struct TimeSpec: Equatable, Sendable {
     public enum Days: Equatable, Sendable {
         case everyDay
         case weekdays
+        /// 토·일. 공휴일은 따지지 않는다.
+        case weekends
         /// 0=일 … 6=토.
         case some(Set<Int>)
 
@@ -15,6 +17,7 @@ public struct TimeSpec: Equatable, Sendable {
         public static func of(_ set: Set<Int>) -> Days {
             if set == Set(0...6) { return .everyDay }
             if set == Set(1...5) { return .weekdays }
+            if set == [0, 6] { return .weekends }
             return .some(set)
         }
 
@@ -22,6 +25,7 @@ public struct TimeSpec: Equatable, Sendable {
             switch self {
             case .everyDay: return "*"
             case .weekdays: return "1-5"
+            case .weekends: return "0,6"
             case .some(let s): return s.isEmpty ? nil : s.sorted().map(String.init).joined(separator: ",")
             }
         }
@@ -30,6 +34,7 @@ public struct TimeSpec: Equatable, Sendable {
             switch self {
             case .everyDay: return "매일"
             case .weekdays: return "평일"
+            case .weekends: return "휴일"
             case .some(let s):
                 let names = ["일", "월", "화", "수", "목", "금", "토"]
                 return "매주 " + s.sorted { ($0 + 6) % 7 < ($1 + 6) % 7 }.map { names[$0] }.joined(separator: "·")
@@ -139,6 +144,37 @@ public struct TimeSpec: Equatable, Sendable {
             }
             return "\(days.text) \(clock(from))~\(clock(to)) \(interval)"
         }
+    }
+
+    /// 손으로 친 시각 → 하루 중 분. `9:30` · `09:30` · `930` · `0930` · `9` · `9시 30분` · `7.05` 를 받는다.
+    public static func minute(fromText text: String) -> Int? {
+        var t = text.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "분", with: "")
+            .replacingOccurrences(of: "시", with: ":")
+            .replacingOccurrences(of: ".", with: ":")
+            .replacingOccurrences(of: " ", with: "")
+        if t.hasSuffix(":") { t.removeLast() }
+        let h: Int?, m: Int?
+        let parts = t.split(separator: ":", omittingEmptySubsequences: false)
+        if parts.count == 2 {
+            guard (1...2).contains(parts[0].count), (1...2).contains(parts[1].count) else { return nil }
+            (h, m) = (Int(parts[0]), Int(parts[1]))
+        } else if parts.count == 1, t.allSatisfy(\.isNumber) {
+            switch t.count {
+            case 1, 2: (h, m) = (Int(t), 0)
+            case 3, 4: (h, m) = (Int(t.dropLast(2)), Int(t.suffix(2)))
+            default: return nil
+            }
+        } else {
+            return nil
+        }
+        guard let h, let m, (0...23).contains(h), (0...59).contains(m) else { return nil }
+        return h * 60 + m
+    }
+
+    /// 하루 중 분 → `HH:MM`.
+    public static func clockText(_ minute: Int) -> String {
+        "\(CronRule.pad(minute / 60)):\(CronRule.pad(minute % 60))"
     }
 
     /// 같은 간격으로 늘어선 목록이면 그 간격.

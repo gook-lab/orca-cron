@@ -827,6 +827,38 @@ struct InfoLine<Content: View>: View {
     }
 }
 
+/// 시각 칸 — `0730` · `7:30` · `7시 30분` 처럼 바로 친다. 맞는 시각이면 치는 동안 바로 반영하고,
+/// 칸을 떠나거나 return 을 누르면 `07:30` 으로 맞춘다. 틀린 글은 빨간 테두리로 두었다가 칸을 떠날 때 원래 시각으로 되돌린다.
+struct ClockField: View {
+    @Binding var date: Date
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var minute: Int { EditView.minute(date) }
+    var valid: Bool { TimeSpec.minute(fromText: text) != nil }
+
+    var body: some View {
+        TextField("09:00", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .monospacedDigit()
+            .multilineTextAlignment(.center)
+            .frame(width: 58)
+            .focused($focused)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.bad, lineWidth: valid || text.isEmpty ? 0 : 1.5))
+            .help("시각을 바로 칩니다 — 0730 · 7:30 · 7시 30분")
+            .onAppear { text = TimeSpec.clockText(minute) }
+            .onChange(of: text) { _, new in
+                if let m = TimeSpec.minute(fromText: new), m != minute { date = EditView.clock(m) }
+            }
+            .onChange(of: date) { _, _ in
+                // 다른 곳에서 바뀌면(cron 에서 돌아옴 등) 글도 맞춘다. 치는 중에는 건드리지 않는다.
+                if !focused { text = TimeSpec.clockText(minute) }
+            }
+            .onChange(of: focused) { _, now in if !now { text = TimeSpec.clockText(minute) } }
+            .onSubmit { text = TimeSpec.clockText(minute) }
+    }
+}
+
 /// 왼쪽 칸 이름 + 오른쪽 입력 한 줄.
 struct FormRow<Content: View>: View {
     let title: String
@@ -1259,6 +1291,7 @@ struct UndoBanner: View {
 enum DayChoice: String, CaseIterable, Identifiable {
     case everyDay = "매일"
     case weekdays = "평일"
+    case weekends = "휴일(토·일)"
     case pick = "요일 고르기"
     case cron = "cron 직접"
     var id: String { rawValue }
@@ -1345,6 +1378,7 @@ struct EditView: View {
         switch spec.days {
         case .everyDay: out.dayChoice = .everyDay
         case .weekdays: out.dayChoice = .weekdays
+        case .weekends: out.dayChoice = .weekends
         case .some(let set):
             out.dayChoice = .pick
             out.days = set
@@ -1367,6 +1401,7 @@ struct EditView: View {
         switch choice {
         case .everyDay: d = .everyDay
         case .weekdays: d = .weekdays
+        case .weekends: d = .weekends
         case .pick: d = .of(days)
         case .cron: return nil
         }
@@ -1475,8 +1510,8 @@ struct EditView: View {
         }
         .onAppear { if initial == nil { initial = current } }
         .onChange(of: dayChoice) { old, new in
-            // 매일·평일에서 「요일 고르기」로 오면 그 요일을 켜 둔다.
-            if new == .pick, old == .everyDay || old == .weekdays { days = old == .everyDay ? Set(0...6) : Set(1...5) }
+            // 매일·평일·휴일에서 「요일 고르기」로 오면 그 요일을 켜 둔다.
+            if new == .pick, let set = [DayChoice.everyDay: Set(0...6), .weekdays: Set(1...5), .weekends: [0, 6]][old] { days = set }
             // 「cron 직접」으로 가면 지금 시각을 식으로 옮기고, 거기서 돌아오면 읽을 수 있는 식을 칸으로 옮긴다.
             if new == .cron, let c = spec(for: old)?.cron { cronText = c }
             if old == .cron, TimeSpec(cron: cronText) != nil {
@@ -1571,13 +1606,7 @@ struct EditView: View {
         }
     }
 
-    func clockField(_ value: Binding<Date>) -> some View {
-        DatePicker("", selection: value, displayedComponents: .hourAndMinute)
-            .labelsHidden()
-            .datePickerStyle(.field)
-            .environment(\.locale, Locale(identifier: "en_GB"))  // 24시간 표기
-            .fixedSize()
-    }
+    func clockField(_ value: Binding<Date>) -> some View { ClockField(date: value) }
 
     /// 마지막 시각에서 한 시간씩 뒤로 가며 아직 없는 시각을 더한다.
     func addTime() {
