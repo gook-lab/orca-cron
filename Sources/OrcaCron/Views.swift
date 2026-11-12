@@ -834,6 +834,8 @@ struct InfoLine<Content: View>: View {
 struct DateGrid: View {
     @Binding var selection: Set<TimeSpec.DayDate>
     @State private var month = Calendar.current.dateInterval(of: .month, for: Date())?.start ?? Date()
+    /// 마우스가 올라간 날.
+    @State private var hovered: TimeSpec.DayDate?
 
     static let title: DateFormatter = {
         let f = DateFormatter()
@@ -898,19 +900,25 @@ struct DateGrid: View {
     func dayCell(_ d: TimeSpec.DayDate, today: TimeSpec.DayDate, sunday: Bool) -> some View {
         let on = selection.contains(d)
         let past = d < today
+        let hover = hovered == d && !(past && !on)
+        let fill = on ? Color.accentColor.opacity(hover ? 0.8 : 1) : Color.primary.opacity(hover ? 0.1 : 0)
         return Button {
             if on { selection.remove(d) } else { selection.insert(d) }
         } label: {
             Text("\(d.day)")
                 .font(.caption.weight(on ? .semibold : .regular)).monospacedDigit()
                 .frame(width: 26, height: 22)
-                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Color.accentColor : Color.clear))
+                .background(RoundedRectangle(cornerRadius: 4).fill(fill))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: d == today && !on ? 1 : 0))
                 .foregroundStyle(on ? Color.white : past ? Color.secondary.opacity(0.5) : sunday ? Color.bad : Color.primary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(past && !on)
+        .onHover { inside in
+            if inside { hovered = d } else if hovered == d { hovered = nil }
+        }
+        .help(past && !on ? "지난 날은 고를 수 없습니다" : on ? "누르면 이 날을 뺍니다" : "누르면 이 날을 고릅니다")
     }
 
     func shift(_ n: Int) {
