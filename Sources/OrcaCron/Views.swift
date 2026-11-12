@@ -926,6 +926,12 @@ struct DateGrid: View {
     }
 }
 
+/// 시각 칸에 틀린 글(또는 빈 칸)이 남아 있는지 — 편집 화면이 저장을 막는다.
+struct BadClockKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
 /// 시각 칸 — `0730` · `7:30` · `7시 30분` 처럼 바로 친다. 맞는 시각이면 치는 동안 바로 반영하고,
 /// 칸을 떠나거나 return 을 누르면 `07:30` 으로 맞춘다. 틀린 글은 빨간 테두리로 두었다가 칸을 떠날 때 원래 시각으로 되돌린다.
 struct ClockField: View {
@@ -945,6 +951,7 @@ struct ClockField: View {
             .focused($focused)
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.bad, lineWidth: valid || text.isEmpty ? 0 : 1.5))
             .help("시각을 바로 칩니다 — 0730 · 7:30 · 7시 30분")
+            .preference(key: BadClockKey.self, value: !valid)
             .onAppear { text = TimeSpec.clockText(minute) }
             .onChange(of: text) { _, new in
                 if let m = TimeSpec.minute(fromText: new), m != minute { date = EditView.clock(m) }
@@ -1439,6 +1446,8 @@ struct EditView: View {
     @State private var from: Date
     @State private var to: Date
     @State private var cronText: String
+    /// 시각 칸에 틀린 글이 남아 있음(칸을 떠나기 전에 저장하면 앞 시각이 저장되므로 막는다).
+    @State private var badClock = false
     /// 처음 연 때의 값 — 취소할 때 바뀐 것이 있는지 본다.
     @State private var initial: Schedule?
 
@@ -1536,7 +1545,7 @@ struct EditView: View {
         }
         if repeating {
             if !(1...TimeSpec.maxEvery).contains(every) { return "간격은 1~\(TimeSpec.maxEvery)분 사이로 넣으세요" }
-            if !allDay, EditView.minute(from) > EditView.minute(to) { return "끝 시각이 시작보다 빠릅니다" }
+            if !allDay, EditView.minute(from) > EditView.minute(to) { return "끝 시각이 시작보다 빠릅니다 — 자정을 넘는 구간은 예약 두 개로 나눠 주세요" }
         }
         return "시각을 확인해 주세요"
     }
@@ -1551,9 +1560,16 @@ struct EditView: View {
         if draft.name.trimmingCharacters(in: .whitespaces).isEmpty { return "이름을 적어 주세요" }
         if draft.terminal.handle.isEmpty { return "터미널을 골라 주세요" }
         if !contentOK { return useTemplate ? "템플릿을 골라 주세요" : "보낼 글을 적어 주세요" }
-        if parsed == nil { return "시각을 확인해 주세요" }
+        if badClock { return EditView.badClockText }
+        guard let p = parsed else { return "시각을 확인해 주세요" }
+        // 오늘만 고르고 시각이 이미 지났거나, 2월 31일처럼 오지 않는 날이면 저장해도 돌지 않는다.
+        if p.next(after: Date()) == nil {
+            return dayChoice == .dates ? "고른 날의 시각이 모두 지났습니다 — 날을 더 고르세요" : "이 시각으로는 앞으로 돌지 않습니다"
+        }
         return nil
     }
+
+    static let badClockText = "시각 칸의 글을 확인해 주세요 — 예: 0730 · 7:30"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1583,7 +1599,9 @@ struct EditView: View {
                 }
                 FormRow(title: "시각") {
                     timeRow
-                    if let p = parsed {
+                    if badClock {
+                        Text(EditView.badClockText).font(.caption).foregroundStyle(Color.bad)
+                    } else if let p = parsed {
                         let runs = dayChoice != .cron && repeating ? spec(for: dayChoice).map { " · 하루 \($0.runsPerDay)번" } ?? "" : ""
                         if let next = p.next(after: Date()) {
                             Text("\(p.summary)\(runs) · 다음 \(TimeText.short(next))")
@@ -1624,6 +1642,7 @@ struct EditView: View {
             if let t = model.terminals.first(where: { $0.handle == new }) { draft.terminal = t.ref }
         }
         .onAppear { if initial == nil { initial = current } }
+        .onPreferenceChange(BadClockKey.self) { bad in badClock = bad }
         .onChange(of: dayChoice) { old, new in
             // 매일·평일·휴일에서 「요일 고르기」로 오면 그 요일을 켜 둔다.
             if new == .pick, let set = [DayChoice.everyDay: Set(0...6), .weekdays: Set(1...5), .weekends: [0, 6]][old] { days = set }
@@ -1691,7 +1710,8 @@ struct EditView: View {
             }
             Button(action: addTime) { Label("추가", systemImage: "plus") }
                 .buttonStyle(.icon).font(.caption)
-                .help("시각 하나 더하기")
+                .disabled(times.count >= TimeSpec.maxTimes)
+                .help(times.count >= TimeSpec.maxTimes ? "시각은 \(TimeSpec.maxTimes)개까지 — 더 많으면 「반복」을 쓰세요" : "시각 하나 더하기")
         }
     }
 
