@@ -4,7 +4,35 @@ import Foundation
 ///
 /// 정한 시각은 시를 쉼표로만 잇고(`0 9,18 * * *`), 반복은 범위·걸음(`*/5 7 * * *; 0 8 * * *`)으로 쓴다.
 /// 다시 열 때 분·시 칸에 `*`·`/`·`-` 가 있으면 반복으로, 없으면 정한 시각으로 읽는다 — 같은 시각 묶음이라도 고른 방식대로 다시 열린다.
+/// 날짜 지정은 여섯째 칸(연도)을 써서 그해 그날에만 돈다(`0 9 20,25 11 * 2026`). 날이 모두 지나면 다음 시각이 없다.
 public struct TimeSpec: Equatable, Sendable {
+    /// 달력에서 고른 날 하나.
+    public struct DayDate: Hashable, Comparable, Sendable {
+        public var year: Int
+        public var month: Int
+        public var day: Int
+
+        public init(year: Int, month: Int, day: Int) {
+            self.year = year
+            self.month = month
+            self.day = day
+        }
+
+        public init(_ date: Date, calendar: Calendar = .current) {
+            let c = calendar.dateComponents([.year, .month, .day], from: date)
+            self.init(year: c.year ?? 2000, month: c.month ?? 1, day: c.day ?? 1)
+        }
+
+        /// 그날 0시. 2월 30일처럼 없는 날이면 nil.
+        public func date(_ calendar: Calendar = .current) -> Date? {
+            guard let d = calendar.date(from: DateComponents(year: year, month: month, day: day)),
+                  DayDate(d, calendar: calendar) == self else { return nil }
+            return d
+        }
+
+        public static func < (a: DayDate, b: DayDate) -> Bool { (a.year, a.month, a.day) < (b.year, b.month, b.day) }
+    }
+
     public enum Days: Equatable, Sendable {
         case everyDay
         case weekdays
@@ -12,6 +40,8 @@ public struct TimeSpec: Equatable, Sendable {
         case weekends
         /// 0=일 … 6=토.
         case some(Set<Int>)
+        /// 달력에서 고른 날들(그해 그날에만).
+        case dates(Set<DayDate>)
 
         /// 모든 요일이면 매일, 월~금이면 평일로 정리한다.
         public static func of(_ set: Set<Int>) -> Days {
@@ -27,6 +57,7 @@ public struct TimeSpec: Equatable, Sendable {
             case .weekdays: return "1-5"
             case .weekends: return "0,6"
             case .some(let s): return s.isEmpty ? nil : s.sorted().map(String.init).joined(separator: ",")
+            case .dates: return nil
             }
         }
 
@@ -38,6 +69,9 @@ public struct TimeSpec: Equatable, Sendable {
             case .some(let s):
                 let names = ["일", "월", "화", "수", "목", "금", "토"]
                 return "매주 " + s.sorted { ($0 + 6) % 7 < ($1 + 6) % 7 }.map { names[$0] }.joined(separator: "·")
+            case .dates(let ds):
+                let list = ds.sorted().map { "\($0.month)/\($0.day)" }
+                return list.count <= 3 ? list.joined(separator: ", ") : "\(list[0]) 등 \(list.count)일"
             }
         }
     }
@@ -62,21 +96,34 @@ public struct TimeSpec: Equatable, Sendable {
         self.pattern = pattern
     }
 
-    /// 흔한 모양의 cron 이면 그 값. 날짜(일·월)를 제한하거나 식마다 요일이 다르면 nil.
+    /// 날짜 지정으로 읽을 수 있는 최대 날 수.
+    public static let maxDates = 366
+
+    /// 편집 화면이 만드는 모양의 cron 이면 그 값. 아니면 nil(「cron 직접」으로 연다).
+    /// 요일 모양 = 일·월이 `*` 이고 식마다 요일이 같다. 날짜 모양 = 모든 식에 연도가 있고 요일이 `*` 이며 고른 날마다 시각이 같다.
     public init?(cron: String) {
         guard let c = Cron(cron) else { return nil }
-        let weekdays: Set<Int> = c.rules[0].weekdays
-        var set = Set<Int>()
         var stepped = false
         for r in c.rules {
-            let everyDate: Bool = r.days.count == 31 && r.months.count == 12
-            guard everyDate, r.weekdays == weekdays else { return nil }
-            for h in r.hours { for m in r.minutes { set.insert(h * 60 + m) } }
             let fields: String = r.part(0) + " " + r.part(1)
             if fields.contains(where: { "*/-".contains($0) }) { stepped = true }
         }
+        let days: Days
+        let set: Set<Int>
+        if c.rules.allSatisfy({ $0.years != nil }) {
+            guard let (ds, ts) = TimeSpec.dateTimes(c.rules) else { return nil }
+            (days, set) = (.dates(ds), ts)
+        } else {
+            let weekdays: Set<Int> = c.rules[0].weekdays
+            var ts = Set<Int>()
+            for r in c.rules {
+                let everyDate: Bool = r.years == nil && r.days.count == 31 && r.months.count == 12
+                guard everyDate, r.weekdays == weekdays else { return nil }
+                for h in r.hours { for m in r.minutes { ts.insert(h * 60 + m) } }
+            }
+            (days, set) = (Days.of(weekdays), ts)
+        }
         let list = set.sorted()
-        let days = Days.of(weekdays)
         if stepped, list.count >= 3, let step = TimeSpec.step(list), step <= TimeSpec.maxEvery {
             // 하루 끝까지 이어지면 끝을 23:59 로 둔다 — 「종일」·「매시」로 다시 열린다.
             let last = list[list.count - 1]
@@ -87,9 +134,42 @@ public struct TimeSpec: Equatable, Sendable {
         self.init(days: days, pattern: .times(list))
     }
 
+    /// 날짜 식들 → 고른 날과 그 하루 시각. 날마다 시각이 다르면 nil.
+    static func dateTimes(_ rules: [CronRule]) -> (Set<DayDate>, Set<Int>)? {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var byDate: [DayDate: Set<Int>] = [:]
+        for r in rules {
+            guard let years = r.years, r.weekdays.count == 7,
+                  years.count * r.months.count * r.days.count <= maxDates * 4 else { return nil }
+            let ts = Set(r.hours.flatMap { h in r.minutes.map { h * 60 + $0 } })
+            for y in years { for mo in r.months { for d in r.days {
+                let dd = DayDate(year: y, month: mo, day: d)
+                if dd.date(cal) != nil { byDate[dd, default: []].formUnion(ts) }
+            } } }
+        }
+        guard let first = byDate.values.first, !first.isEmpty, byDate.count <= maxDates,
+              byDate.values.allSatisfy({ $0 == first }) else { return nil }
+        return (Set(byDate.keys), first)
+    }
+
     /// 저장할 cron 식. 시각·요일이 비었거나, 간격이 범위 밖이거나, 구간이 거꾸로면 nil.
     public var cron: String? {
+        guard let clocks = clockFields else { return nil }
+        if case .dates(let ds) = days {
+            // 같은 해·달의 날은 한 식에 모은다(`0 9 20,25 11 * 2026`).
+            let byMonth = Dictionary(grouping: ds) { $0.year * 100 + $0.month }.sorted { $0.key < $1.key }
+            guard !byMonth.isEmpty else { return nil }
+            return byMonth.flatMap { ym, list in
+                clocks.map { "\($0) \(list.map(\.day).sorted().map(String.init).joined(separator: ",")) \(ym % 100) * \(ym / 100)" }
+            }.joined(separator: "; ")
+        }
         guard let dow = days.field else { return nil }
+        return clocks.map { "\($0) * * \(dow)" }.joined(separator: "; ")
+    }
+
+    /// 식마다의 「분 시」 칸.
+    var clockFields: [String]? {
         switch pattern {
         case .times(let list):
             let ms = Set(list).filter { (0..<1440).contains($0) }
@@ -98,8 +178,7 @@ public struct TimeSpec: Equatable, Sendable {
             for t in ms { byMinute[t % 60, default: []].append(t / 60) }
             return byMinute.map { (m: $0.key, hours: $0.value.sorted()) }
                 .sorted { ($0.hours[0], $0.m) < ($1.hours[0], $1.m) }
-                .map { "\($0.m) \($0.hours.map(String.init).joined(separator: ",")) * * \(dow)" }
-                .joined(separator: "; ")
+                .map { "\($0.m) \($0.hours.map(String.init).joined(separator: ","))" }
         case .every(let n, let from, let to):
             guard (1...TimeSpec.maxEvery).contains(n), from >= 0, from <= to, to < 1440 else { return nil }
             var minutesByHour: [Int: [Int]] = [:]
@@ -109,8 +188,7 @@ public struct TimeSpec: Equatable, Sendable {
             for (h, ms) in minutesByHour { hoursByMinutes[ms, default: []].append(h) }
             return hoursByMinutes.map { (ms: $0.key, hours: $0.value.sorted()) }
                 .sorted { $0.hours[0] < $1.hours[0] }
-                .map { "\(TimeSpec.compress($0.ms, max: 59)) \(TimeSpec.compress($0.hours, max: 23)) * * \(dow)" }
-                .joined(separator: "; ")
+                .map { "\(TimeSpec.compress($0.ms, max: 59)) \(TimeSpec.compress($0.hours, max: 23))" }
         }
     }
 

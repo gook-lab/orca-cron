@@ -36,7 +36,7 @@ public struct Cron: Equatable, Sendable {
     }
 }
 
-/// 5칸 cron(분 시 일 월 요일), 이 맥의 현지 시각 기준.
+/// 5칸 cron(분 시 일 월 요일), 이 맥의 현지 시각 기준. 여섯째 칸이 있으면 연도(달력의 날짜 지정용, 2000~2099).
 /// 일·요일 칸이 둘 다 `*` 로 시작하지 않으면 둘 중 하나만 맞아도 된다(Vixie cron 과 같음). 요일 7 은 일요일(0).
 struct CronRule: Equatable, Sendable {
     let expression: String
@@ -45,12 +45,14 @@ struct CronRule: Equatable, Sendable {
     let days: Set<Int>
     let months: Set<Int>
     let weekdays: Set<Int>
+    /// nil = 모든 해.
+    let years: Set<Int>?
     let dayRestricted: Bool
     let weekdayRestricted: Bool
 
     init?(_ expression: String) {
         let parts = expression.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard parts.count == 5,
+        guard parts.count == 5 || parts.count == 6,
               let mi = CronRule.field(parts[0], 0, 59),
               let h = CronRule.field(parts[1], 0, 23),
               let d = CronRule.field(parts[2], 1, 31),
@@ -58,6 +60,12 @@ struct CronRule: Equatable, Sendable {
               var w = CronRule.field(parts[4], 0, 7)
         else { return nil }
         if w.contains(7) { w.remove(7); w.insert(0) }
+        if parts.count == 6 {
+            guard let y = CronRule.field(parts[5], 2000, 2099) else { return nil }
+            years = y
+        } else {
+            years = nil
+        }
         self.expression = parts.joined(separator: " ")
         minutes = mi.sorted()
         hours = h.sorted()
@@ -100,10 +108,12 @@ struct CronRule: Equatable, Sendable {
         let floor = calendar.dateInterval(of: .minute, for: date)?.start ?? date
         let start = floor.addingTimeInterval(60)
         let firstDay = calendar.startOfDay(for: start)
+        if let years, let last = years.max(), calendar.component(.year, from: firstDay) > last { return nil }
         for offset in 0..<400 {
             guard let day = calendar.date(byAdding: .day, value: offset, to: firstDay) else { return nil }
-            let c = calendar.dateComponents([.month, .day, .weekday], from: day)
+            let c = calendar.dateComponents([.year, .month, .day, .weekday], from: day)
             guard let month = c.month, let dom = c.day, let wd = c.weekday, months.contains(month) else { continue }
+            if let years, let y = c.year, !years.contains(y) { continue }
             let w = wd - 1  // Calendar: 1=일요일 → cron 0
             let dayOK: Bool
             if dayRestricted && weekdayRestricted {

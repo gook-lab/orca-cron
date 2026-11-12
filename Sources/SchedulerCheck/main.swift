@@ -529,6 +529,35 @@ do {
     check(next(weekend.cron!, at(2026, 11, 13, 10, 0)) == at(2026, 11, 14, 9, 0), "금요일 다음 휴일 = 토요일")
     check(spec(.weekends, .every(30, from: 600, to: 720)).summary == "휴일 10:00~12:00 30분마다", "휴일 구간 반복")
 
+    // 날짜 지정 — 여섯째 칸이 연도, 그해 그날에만
+    func dd(_ y: Int, _ m: Int, _ d: Int) -> TimeSpec.DayDate { TimeSpec.DayDate(year: y, month: m, day: d) }
+    let picked = spec(.dates([dd(2026, 11, 20), dd(2026, 11, 25), dd(2026, 12, 3)]), .times([540, 1080]))
+    check(picked.cron == "0 9,18 20,25 11 * 2026; 0 9,18 3 12 * 2026", "날짜 지정 cron", picked.cron ?? "nil")
+    check(picked.summary == "11/20, 11/25, 12/3 09:00 · 18:00", "날짜 지정 설명", picked.summary)
+    roundTrip(picked, "날짜 지정")
+    check(next(picked.cron!, at(2026, 11, 13, 10, 0)) == at(2026, 11, 20, 9, 0), "고른 첫날 09:00")
+    check(next(picked.cron!, at(2026, 11, 25, 18, 0)) == at(2026, 12, 3, 9, 0), "다음 고른 날로 건너뜀")
+    check(next(picked.cron!, at(2026, 12, 3, 18, 0)) == nil, "고른 날이 다 지나면 다음 없음")
+    check(next("0 9 20 11 * 2026", at(2027, 1, 1, 0, 0)) == nil, "지난 해만 남으면 바로 없음")
+    let many = spec(.dates(Set((1...5).map { dd(2026, 11, 15 + $0) })), .times([540]))
+    check(many.summary == "11/16 등 5일 09:00", "날이 많으면 첫날 등 N일", many.summary)
+    let dateRepeat = spec(.dates([dd(2026, 11, 20)]), .every(5, from: 420, to: 480))
+    check(dateRepeat.cron == "*/5 7 20 11 * 2026; 0 8 20 11 * 2026", "날짜 + 구간 반복 cron", dateRepeat.cron ?? "nil")
+    check(dateRepeat.summary == "11/20 07:00~08:00 5분마다", "날짜 + 구간 반복 설명", dateRepeat.summary)
+    roundTrip(dateRepeat, "날짜 + 구간 반복")
+    let newYear = spec(.dates([dd(2027, 1, 2), dd(2026, 12, 31)]), .times([600]))
+    check(newYear.cron == "0 10 31 12 * 2026; 0 10 2 1 * 2027", "해를 넘기는 날 순서", newYear.cron ?? "nil")
+    roundTrip(newYear, "해를 넘기는 날")
+    check(next(newYear.cron!, at(2026, 12, 31, 11, 0)) == at(2027, 1, 2, 10, 0), "해를 넘겨 다음 날")
+    check(spec(.dates([]), .times([540])).cron == nil, "고른 날 없음")
+    check(Cron("0 9 20 11 * 1999") == nil, "연도는 2000~2099")
+    check(Cron("0 9 20 11 * 2026") != nil && Cron("0 9 20 11 * 2026 1") == nil, "칸은 5개 또는 6개")
+    check(TimeSpec(cron: "0 9 31 2 * 2027") == nil, "없는 날(2월 31일)만이면 cron 직접")
+    check(TimeSpec(cron: "0 9 20 11 1 2026") == nil, "날짜에 요일까지 걸면 cron 직접")
+    check(TimeSpec(cron: "0 9 20 11 * 2026; 0 18 25 11 * 2026") == nil, "날마다 시각이 다르면 cron 직접")
+    check(TimeSpec(cron: "0 9 20 11 * 2026; 0 9 * * *") == nil, "연도 있는 식과 없는 식이 섞이면 cron 직접")
+    check(TimeSpec.DayDate(year: 2026, month: 2, day: 30).date(cal) == nil, "없는 날은 날짜가 아님")
+
     // 시각 칸에 친 글
     for (text, want) in [("9:30", 570), ("09:30", 570), ("930", 570), ("0930", 570), ("9", 540), ("21", 1260),
                          ("9시 30분", 570), ("9시", 540), (" 7:05 ", 425), ("7.05", 425), ("7:5", 425), ("0", 0), ("23:59", 1439)] {

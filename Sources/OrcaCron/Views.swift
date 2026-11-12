@@ -642,6 +642,9 @@ struct ScheduleRow: View {
         return InfoLine(icon: s.isOneShot ? "paperplane" : "clock") {
             if s.isOneShot {
                 Text("1회 보내기 · " + (s.tracksResult ? "결과 받음" : "결과 안 받음")).foregroundStyle(.secondary)
+            } else if s.enabled, next == nil, Cron(s.cron) != nil {
+                Text("끝남").foregroundStyle(Color.warn).fixedSize()
+                Text("· \(rule) · 고른 날이 모두 지남").foregroundStyle(.secondary).lineLimit(1)
             } else if s.enabled {
                 Text("다음 \(TimeText.short(next))").foregroundStyle(.primary).monospacedDigit().fixedSize()
                 Text("· \(rule)").foregroundStyle(.secondary).lineLimit(1)
@@ -824,6 +827,94 @@ struct InfoLine<Content: View>: View {
             HStack(alignment: .firstTextBaseline, spacing: 4) { content }
         }
         .font(.caption)
+    }
+}
+
+/// 날짜 지정 달력 — 날을 눌러 켜고 끈다. 여러 달에 걸쳐 고를 수 있고, 지난 날은 고를 수 없다(12달 앞까지).
+struct DateGrid: View {
+    @Binding var selection: Set<TimeSpec.DayDate>
+    @State private var month = Calendar.current.dateInterval(of: .month, for: Date())?.start ?? Date()
+
+    static let title: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy년 M월"
+        return f
+    }()
+
+    var body: some View {
+        let cal = Calendar.current
+        let thisMonth = cal.dateInterval(of: .month, for: Date())?.start ?? Date()
+        let today = TimeSpec.DayDate(Date())
+        let count = cal.range(of: .day, in: .month, for: month)?.count ?? 30
+        let lead = cal.component(.weekday, from: month) - 1  // 일요일부터
+        let ym = TimeSpec.DayDate(month)
+        let cells: [Int?] = Array(repeating: nil, count: lead) + (1...count).map { Optional($0) }
+        let canBack = month > thisMonth
+        let canForward = (cal.dateComponents([.month], from: thisMonth, to: month).month ?? 0) < 12
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Button { shift(-1) } label: { Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold)) }
+                    .disabled(!canBack).help("앞 달")
+                Text(DateGrid.title.string(from: month)).font(.caption.weight(.semibold)).monospacedDigit()
+                    .frame(minWidth: 72)
+                Button { shift(1) } label: { Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)) }
+                    .disabled(!canForward).help("다음 달")
+                Spacer(minLength: 6)
+                if !selection.isEmpty {
+                    Text("\(selection.count)일 고름").font(.caption).foregroundStyle(.secondary)
+                    Button("지우기") { selection.removeAll() }.font(.caption).help("고른 날 모두 빼기")
+                }
+            }
+            .buttonStyle(.icon)
+            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                GridRow {
+                    ForEach(0..<7, id: \.self) { i in
+                        Text(["일", "월", "화", "수", "목", "금", "토"][i]).font(.caption2)
+                            .foregroundStyle(i == 0 ? Color.bad : .secondary).frame(width: 26)
+                    }
+                }
+                ForEach(0..<(cells.count + 6) / 7, id: \.self) { row in
+                    GridRow {
+                        ForEach(0..<7, id: \.self) { col in
+                            let i = row * 7 + col
+                            if i < cells.count, let d = cells[i] {
+                                dayCell(TimeSpec.DayDate(year: ym.year, month: ym.month, day: d), today: today, sunday: col == 0)
+                            } else {
+                                Color.clear.frame(width: 26, height: 22)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            // 이미 고른 날이 있으면 그중 처음 오는 앞날의 달을 연다.
+            if let first = selection.filter({ $0 >= today }).min(), let d = first.date() {
+                month = cal.dateInterval(of: .month, for: d)?.start ?? month
+            }
+        }
+    }
+
+    func dayCell(_ d: TimeSpec.DayDate, today: TimeSpec.DayDate, sunday: Bool) -> some View {
+        let on = selection.contains(d)
+        let past = d < today
+        return Button {
+            if on { selection.remove(d) } else { selection.insert(d) }
+        } label: {
+            Text("\(d.day)")
+                .font(.caption.weight(on ? .semibold : .regular)).monospacedDigit()
+                .frame(width: 26, height: 22)
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Color.accentColor : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: d == today && !on ? 1 : 0))
+                .foregroundStyle(on ? Color.white : past ? Color.secondary.opacity(0.5) : sunday ? Color.bad : Color.primary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(past && !on)
+    }
+
+    func shift(_ n: Int) {
+        month = Calendar.current.date(byAdding: .month, value: n, to: month) ?? month
     }
 }
 
@@ -1293,6 +1384,7 @@ enum DayChoice: String, CaseIterable, Identifiable {
     case weekdays = "평일"
     case weekends = "휴일(토·일)"
     case pick = "요일 고르기"
+    case dates = "날짜 지정"
     case cron = "cron 직접"
     var id: String { rawValue }
 }
@@ -1307,6 +1399,7 @@ struct TimeSlot: Identifiable {
 struct TimeFill {
     var dayChoice: DayChoice = .cron
     var days: Set<Int> = [1]
+    var dates: Set<TimeSpec.DayDate> = []
     var repeating = false
     var times = [540]
     var every = 30
@@ -1327,6 +1420,8 @@ struct EditView: View {
     @State private var useTemplate: Bool
     @State private var dayChoice: DayChoice
     @State private var days: Set<Int>
+    /// 「날짜 지정」에서 달력으로 고른 날.
+    @State private var dates: Set<TimeSpec.DayDate>
     /// false = 정한 시각, true = 반복(N분마다).
     @State private var repeating: Bool
     @State private var times: [TimeSlot]
@@ -1352,6 +1447,7 @@ struct EditView: View {
         let f = EditView.fill(from: draft.cron.isEmpty ? "0 9 * * *" : draft.cron)
         _dayChoice = State(initialValue: f.dayChoice)
         _days = State(initialValue: f.days)
+        _dates = State(initialValue: f.dates)
         _repeating = State(initialValue: f.repeating)
         _times = State(initialValue: f.times.map { TimeSlot(date: EditView.clock($0)) })
         _every = State(initialValue: f.every)
@@ -1382,6 +1478,9 @@ struct EditView: View {
         case .some(let set):
             out.dayChoice = .pick
             out.days = set
+        case .dates(let ds):
+            out.dayChoice = .dates
+            out.dates = ds
         }
         switch spec.pattern {
         case .times(let list):
@@ -1403,6 +1502,7 @@ struct EditView: View {
         case .weekdays: d = .weekdays
         case .weekends: d = .weekends
         case .pick: d = .of(days)
+        case .dates: d = .dates(dates)
         case .cron: return nil
         }
         if repeating {
@@ -1423,6 +1523,7 @@ struct EditView: View {
         switch dayChoice {
         case .cron: return cron.isEmpty ? "cron 식을 적어 주세요" : "시각 형식이 맞지 않습니다: \(cron)"
         case .pick where days.isEmpty: return "요일을 하나 이상 고르세요"
+        case .dates where dates.isEmpty: return "달력에서 날을 하나 이상 고르세요"
         default: break
         }
         if repeating {
@@ -1476,9 +1577,15 @@ struct EditView: View {
                     timeRow
                     if let p = parsed {
                         let runs = dayChoice != .cron && repeating ? spec(for: dayChoice).map { " · 하루 \($0.runsPerDay)번" } ?? "" : ""
-                        Text("\(p.summary)\(runs) · 다음 \(TimeText.short(p.next(after: Date())))")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if let next = p.next(after: Date()) {
+                            Text("\(p.summary)\(runs) · 다음 \(TimeText.short(next))")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("\(p.summary) · 고른 날이 모두 지나 더 돌지 않습니다")
+                                .font(.caption).foregroundStyle(Color.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else {
                         Text(timeProblem).font(.caption).foregroundStyle(Color.bad)
                     }
@@ -1517,6 +1624,7 @@ struct EditView: View {
             if old == .cron, TimeSpec(cron: cronText) != nil {
                 let f = EditView.fill(from: cronText)
                 if new == .pick, f.dayChoice == .pick { days = f.days }
+                if new == .dates, f.dayChoice == .dates { dates = f.dates }
                 repeating = f.repeating
                 times = f.times.map { TimeSlot(date: EditView.clock($0)) }
                 every = f.every
@@ -1546,6 +1654,7 @@ struct EditView: View {
                 }
             }
             if dayChoice == .pick { dayButtons }
+            if dayChoice == .dates { DateGrid(selection: $dates) }
             if dayChoice == .cron {
                 TextField("분 시 일 월 요일", text: $cronText)
                     .textFieldStyle(.roundedBorder)
