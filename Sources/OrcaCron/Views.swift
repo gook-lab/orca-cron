@@ -589,7 +589,11 @@ struct ScheduleRow: View {
                     }
                 }
                 statusLine(s)
-                if showHistory { historyList(s) }
+                if showHistory {
+                    HistoryPanel(model: model, schedule: s)
+                        .padding(.top, 3).padding(.leading, 2)
+                        .contentShape(Rectangle()).onTapGesture {}  // 기록을 누르면 편집으로 가지 않게
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { if !s.isOneShot { onEdit() } }
@@ -691,13 +695,13 @@ struct ScheduleRow: View {
                         withAnimation(.easeOut(duration: 0.15)) { showHistory.toggle() }
                     } label: {
                         HStack(spacing: 2) {
-                            Text("기록 \(s.history.count)")
+                            Text("기록")
                             Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold))
                                 .rotationEffect(.degrees(showHistory ? 90 : 0))
                         }
                     }
                     .buttonStyle(.icon)
-                    .help("최근 실행 \(s.history.count)회")
+                    .help("날짜별 실행 기록(최근 \(RunArchive.keepDays)일)")
                 }
             }
         } else {
@@ -716,15 +720,63 @@ struct ScheduleRow: View {
         }
     }
 
-    /// 최근 실행 기록(최대 10회) — 날짜 · 결과 · 요약 · 링크.
-    func historyList(_ s: Schedule) -> some View {
+    func color(_ status: String) -> Color { statusColor(status) }
+}
+
+/// 실행 결과 글자 색 — 성공 초록 · 실패·결과 없음 빨강 · 나머지 흐림.
+func statusColor(_ status: String) -> Color {
+    switch status {
+    case "성공": return .ok
+    case "실패", "결과 없음": return .bad
+    default: return .secondary
+    }
+}
+
+/// 예약 하나의 실행 기록 — 날짜를 골라 그날 기록을 10개씩 본다(최근 30일).
+struct HistoryPanel: View {
+    @ObservedObject var model: AppModel
+    let schedule: Schedule
+    @State private var records: [RunRecord] = []
+    @State private var day = Calendar.current.startOfDay(for: Date())
+    @State private var page = 0
+    @State private var loaded = false
+
+    static let clock: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "M/d HH:mm"
-        return VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(s.history.enumerated()), id: \.offset) { _, r in
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    var body: some View {
+        let days = RunArchive.days(records)
+        let shown = RunArchive.page(records, day: day, page: page)
+        let pages = max(1, (shown.total + RunArchive.perPage - 1) / RunArchive.perPage)
+        let earlier = days.first { $0 < day }
+        let later = days.last { $0 > day }
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 2) {
+                Button { go(earlier) } label: { chevron("left") }
+                    .disabled(earlier == nil).help("기록이 있는 앞 날")
+                DatePicker("", selection: Binding(get: { day }, set: { go(Calendar.current.startOfDay(for: $0)) }),
+                           in: ...Date(), displayedComponents: .date)
+                    .labelsHidden().datePickerStyle(.compact).controlSize(.small).fixedSize()
+                    .environment(\.locale, Locale(identifier: "ko_KR"))
+                    .help("날짜를 골라 그날 기록 보기")
+                Button { go(later) } label: { chevron("right") }
+                    .disabled(later == nil).help("기록이 있는 뒷 날")
+                Text(shown.total == 0 ? "기록 없음" : "\(shown.total)건").foregroundStyle(.secondary).padding(.leading, 3)
+                Spacer(minLength: 4)
+                if pages > 1 {
+                    Button { page -= 1 } label: { chevron("left") }.disabled(page == 0).help("앞 쪽")
+                    Text("\(page + 1)/\(pages)").monospacedDigit().foregroundStyle(.secondary)
+                    Button { page += 1 } label: { chevron("right") }.disabled(page + 1 >= pages).help("뒤 쪽")
+                }
+            }
+            .buttonStyle(.icon)
+            ForEach(Array(shown.items.enumerated()), id: \.offset) { _, r in
                 HStack(spacing: 5) {
-                    Text(f.string(from: r.at)).foregroundStyle(.secondary).monospacedDigit()
-                    Text(r.status).foregroundStyle(color(r.status))
+                    Text(HistoryPanel.clock.string(from: r.at)).foregroundStyle(.secondary).monospacedDigit()
+                    Text(r.status).foregroundStyle(statusColor(r.status))
                     if let sum = r.summary, !sum.isEmpty {
                         Text(sum).foregroundStyle(.secondary).lineLimit(1).help(sum)
                     }
@@ -735,15 +787,25 @@ struct ScheduleRow: View {
             }
         }
         .font(.caption2)
-        .padding(.top, 3).padding(.leading, 2)
+        .onAppear(perform: reload)
+        .onChange(of: schedule.history.first?.at) { _, _ in reload() }
     }
 
-    func color(_ status: String) -> Color {
-        switch status {
-        case "성공": return .ok
-        case "실패", "결과 없음": return .bad
-        default: return .secondary
-        }
+    func chevron(_ side: String) -> some View {
+        Image(systemName: "chevron.\(side)").font(.system(size: 8, weight: .bold)).frame(width: 12)
+    }
+
+    func go(_ d: Date?) {
+        guard let d else { return }
+        day = d
+        page = 0
+    }
+
+    /// 처음 열 때는 기록이 있는 가장 최근 날로 간다. 새 기록이 오면 보던 날 그대로 다시 읽는다.
+    func reload() {
+        records = model.history(schedule)
+        if !loaded, let newest = RunArchive.days(records).first { day = newest }
+        loaded = true
     }
 }
 
@@ -1193,31 +1255,31 @@ struct UndoBanner: View {
 
 // MARK: 예약 편집
 
-enum TimeMode: String, CaseIterable, Identifiable {
-    case daily = "매일"
+/// 시각 칸의 첫 고르기 — 어느 요일에(또는 cron 직접).
+enum DayChoice: String, CaseIterable, Identifiable {
+    case everyDay = "매일"
     case weekdays = "평일"
-    case weekly = "매주 요일"
-    case multi = "하루 여러 번"
-    case every = "N분마다"
+    case pick = "요일 고르기"
     case cron = "cron 직접"
     var id: String { rawValue }
 }
 
-/// 「하루 여러 번」의 시각 한 칸.
+/// 「정한 시각」의 시각 한 칸.
 struct TimeSlot: Identifiable {
     let id = UUID()
     var date: Date
 }
 
-/// 저장된 cron 을 편집 칸으로 되돌린 값.
+/// 저장된 cron 을 편집 칸으로 되돌린 값. 시각은 하루 중 분.
 struct TimeFill {
-    var mode: TimeMode = .cron
-    var hour = 9
-    var minute = 0
+    var dayChoice: DayChoice = .cron
     var days: Set<Int> = [1]
-    var times: [(h: Int, m: Int)] = [(9, 0), (18, 0)]
-    var weekdaysOnly = false
+    var repeating = false
+    var times = [540]
     var every = 30
+    var allDay = true
+    var from = 540
+    var to = 1080
 }
 
 struct EditView: View {
@@ -1230,12 +1292,16 @@ struct EditView: View {
     let openTemplate: (String?, Schedule) -> Void
 
     @State private var useTemplate: Bool
-    @State private var mode: TimeMode
-    @State private var time: Date
+    @State private var dayChoice: DayChoice
     @State private var days: Set<Int>
+    /// false = 정한 시각, true = 반복(N분마다).
+    @State private var repeating: Bool
     @State private var times: [TimeSlot]
-    @State private var multiWeekdays: Bool
     @State private var every: Int
+    /// 반복 구간 — 종일이면 from·to 를 쓰지 않는다.
+    @State private var allDay: Bool
+    @State private var from: Date
+    @State private var to: Date
     @State private var cronText: String
     /// 처음 연 때의 값 — 취소할 때 바뀐 것이 있는지 본다.
     @State private var initial: Schedule?
@@ -1251,104 +1317,84 @@ struct EditView: View {
         _useTemplate = State(initialValue: draft.prompt == nil)
         _cronText = State(initialValue: draft.cron)
         let f = EditView.fill(from: draft.cron.isEmpty ? "0 9 * * *" : draft.cron)
-        _mode = State(initialValue: f.mode)
-        _time = State(initialValue: Calendar.current.date(bySettingHour: f.hour, minute: f.minute, second: 0, of: Date()) ?? Date())
+        _dayChoice = State(initialValue: f.dayChoice)
         _days = State(initialValue: f.days)
-        _times = State(initialValue: f.times.map { TimeSlot(date: EditView.clock($0.h, $0.m)) })
-        _multiWeekdays = State(initialValue: f.weekdaysOnly)
+        _repeating = State(initialValue: f.repeating)
+        _times = State(initialValue: f.times.map { TimeSlot(date: EditView.clock($0)) })
         _every = State(initialValue: f.every)
+        _allDay = State(initialValue: f.allDay)
+        _from = State(initialValue: EditView.clock(f.from))
+        _to = State(initialValue: EditView.clock(f.to))
     }
 
-    static func clock(_ h: Int, _ m: Int) -> Date {
-        Calendar.current.date(bySettingHour: h, minute: m, second: 0, of: Date()) ?? Date()
+    /// 하루 중 분 → 오늘 그 시각.
+    static func clock(_ minute: Int) -> Date {
+        Calendar.current.date(bySettingHour: minute / 60, minute: minute % 60, second: 0, of: Date()) ?? Date()
     }
 
-    static func hm(_ d: Date) -> (h: Int, m: Int) {
+    /// 시각 → 하루 중 분.
+    static func minute(_ d: Date) -> Int {
         let c = Calendar.current.dateComponents([.hour, .minute], from: d)
-        return (c.hour ?? 9, c.minute ?? 0)
+        return (c.hour ?? 9) * 60 + (c.minute ?? 0)
     }
 
-    /// 흔한 cron 모양이면 그 칸으로 연다. 아니면 「cron 직접」.
+    /// 편집 화면이 만드는 모양(요일 + 정한 시각 · 구간 반복)이면 그 칸으로 연다. 아니면 「cron 직접」.
     static func fill(from cron: String) -> TimeFill {
         var out = TimeFill()
-        let pieces = cron.split(separator: ";").map { $0.split(separator: " ").map(String.init) }
-        guard !pieces.isEmpty, pieces.allSatisfy({ $0.count == 5 && $0[2] == "*" && $0[3] == "*" }) else { return out }
-        // 하루 여러 번: 식 여럿, 또는 시가 여럿 — 요일 칸이 모두 같고 매일·평일일 때.
-        let dow = pieces[0][4]
-        var pairs: [(h: Int, m: Int)] = []
-        for p in pieces {
-            guard let m = Int(p[0]), p[4] == dow else { pairs = []; break }
-            let hs = p[1].split(separator: ",")
-            let hours = hs.compactMap { Int($0) }
-            guard !hours.isEmpty, hours.count == hs.count else { pairs = []; break }
-            pairs += hours.map { (h: $0, m: m) }
+        guard let spec = TimeSpec(cron: cron) else { return out }
+        switch spec.days {
+        case .everyDay: out.dayChoice = .everyDay
+        case .weekdays: out.dayChoice = .weekdays
+        case .some(let set):
+            out.dayChoice = .pick
+            out.days = set
         }
-        if pairs.count > 1, dow == "*" || dow == "1-5" {
-            out.mode = .multi
-            out.times = pairs.sorted { ($0.h, $0.m) < ($1.h, $1.m) }
-            out.weekdaysOnly = dow == "1-5"
-            (out.hour, out.minute) = out.times[0]
-            return out
-        }
-        guard pieces.count == 1 else { return out }
-        let p = pieces[0]
-        if p[1] == "*", p[4] == "*", p[0].hasPrefix("*/"), let n = Int(p[0].dropFirst(2)) {
-            out.mode = .every
+        switch spec.pattern {
+        case .times(let list):
+            out.times = list
+        case .every(let n, let from, let to):
+            out.repeating = true
             out.every = n
-            return out
-        }
-        guard pairs.count == 1 else { return out }
-        (out.hour, out.minute) = pairs[0]
-        out.times = [pairs[0], ((pairs[0].h + 9) % 24, pairs[0].m)]
-        if p[4] == "*" {
-            out.mode = .daily
-        } else if p[4] == "1-5" {
-            out.mode = .weekdays
-        } else {
-            let dayParts = p[4].split(separator: ",")
-            let ds = dayParts.compactMap { Int($0) }.map { $0 == 7 ? 0 : $0 }
-            if !ds.isEmpty, ds.count == dayParts.count, ds.allSatisfy({ (0...6).contains($0) }) {
-                out.mode = .weekly
-                out.days = Set(ds)
-            }
+            out.allDay = from == 0 && to == 1439
+            if !out.allDay { (out.from, out.to) = (from, to) }
         }
         return out
     }
 
-    /// 시각 목록 → cron. 분이 같은 시각은 한 식에 모으고, 분이 다르면 `;` 로 잇는다.
-    static func multiCron(_ times: [Date], weekdaysOnly: Bool) -> String {
-        let dow = weekdaysOnly ? "1-5" : "*"
-        var byMinute: [Int: Set<Int>] = [:]
-        for t in times {
-            let (h, m) = hm(t)
-            byMinute[m, default: []].insert(h)
+    /// 지금 칸 그대로의 시각. 「cron 직접」이면 nil.
+    func spec(for choice: DayChoice) -> TimeSpec? {
+        let d: TimeSpec.Days
+        switch choice {
+        case .everyDay: d = .everyDay
+        case .weekdays: d = .weekdays
+        case .pick: d = .of(days)
+        case .cron: return nil
         }
-        return byMinute.map { (m: $0.key, hours: $0.value.sorted()) }
-            .sorted { ($0.hours[0], $0.m) < ($1.hours[0], $1.m) }
-            .map { "\($0.m) \($0.hours.map(String.init).joined(separator: ",")) * * \(dow)" }
-            .joined(separator: "; ")
-    }
-
-    var hm: (Int, Int) {
-        let c = Calendar.current.dateComponents([.hour, .minute], from: time)
-        return (c.hour ?? 9, c.minute ?? 0)
+        if repeating {
+            return TimeSpec(days: d, pattern: .every(every, from: allDay ? 0 : EditView.minute(from),
+                                                     to: allDay ? 1439 : EditView.minute(to)))
+        }
+        return TimeSpec(days: d, pattern: .times(times.map { EditView.minute($0.date) }))
     }
 
     var cron: String {
-        let (h, m) = hm
-        switch mode {
-        case .daily: return "\(m) \(h) * * *"
-        case .weekdays: return "\(m) \(h) * * 1-5"
-        case .weekly: return "\(m) \(h) * * \(days.isEmpty ? "1" : days.sorted().map(String.init).joined(separator: ","))"
-        case .multi: return EditView.multiCron(times.map(\.date), weekdaysOnly: multiWeekdays)
-        case .every: return "*/\(every) * * * *"
-        case .cron: return cronText.trimmingCharacters(in: .whitespaces)
-        }
+        dayChoice == .cron ? cronText.trimmingCharacters(in: .whitespaces) : (spec(for: dayChoice)?.cron ?? "")
     }
 
-    var parsed: Cron? {
-        if mode == .every && !(1...59).contains(every) { return nil }
-        return Cron(cron)
+    var parsed: Cron? { Cron(cron) }
+
+    /// 시각이 맞지 않을 때 그 자리에 보일 이유.
+    var timeProblem: String {
+        switch dayChoice {
+        case .cron: return cron.isEmpty ? "cron 식을 적어 주세요" : "시각 형식이 맞지 않습니다: \(cron)"
+        case .pick where days.isEmpty: return "요일을 하나 이상 고르세요"
+        default: break
+        }
+        if repeating {
+            if !(1...TimeSpec.maxEvery).contains(every) { return "간격은 1~\(TimeSpec.maxEvery)분 사이로 넣으세요" }
+            if !allDay, EditView.minute(from) > EditView.minute(to) { return "끝 시각이 시작보다 빠릅니다" }
+        }
+        return "시각을 확인해 주세요"
     }
 
     var contentOK: Bool {
@@ -1394,11 +1440,12 @@ struct EditView: View {
                 FormRow(title: "시각") {
                     timeRow
                     if let p = parsed {
-                        Text("\(p.summary) · 다음 \(TimeText.short(p.next(after: Date())))")
+                        let runs = dayChoice != .cron && repeating ? spec(for: dayChoice).map { " · 하루 \($0.runsPerDay)번" } ?? "" : ""
+                        Text("\(p.summary)\(runs) · 다음 \(TimeText.short(p.next(after: Date())))")
                             .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text(mode == .every ? "1~59 사이 분을 넣으세요" : "시각 형식이 맞지 않습니다: \(cron)")
-                            .font(.caption).foregroundStyle(Color.bad)
+                        Text(timeProblem).font(.caption).foregroundStyle(Color.bad)
                     }
                 }
                 FormRow(title: "늦으면") {
@@ -1427,12 +1474,20 @@ struct EditView: View {
             if let t = model.terminals.first(where: { $0.handle == new }) { draft.terminal = t.ref }
         }
         .onAppear { if initial == nil { initial = current } }
-        .onChange(of: mode) { old, new in
-            // 「매일 09:30」에서 「하루 여러 번」으로 바꾸면 09:30 을 첫 칸으로 둔다.
-            guard new == .multi, [.daily, .weekdays].contains(old) else { return }
-            multiWeekdays = old == .weekdays
-            let now = EditView.hm(time)
-            if !times.contains(where: { EditView.hm($0.date) == now }), !times.isEmpty { times[0].date = time }
+        .onChange(of: dayChoice) { old, new in
+            // 매일·평일에서 「요일 고르기」로 오면 그 요일을 켜 둔다.
+            if new == .pick, old == .everyDay || old == .weekdays { days = old == .everyDay ? Set(0...6) : Set(1...5) }
+            // 「cron 직접」으로 가면 지금 시각을 식으로 옮기고, 거기서 돌아오면 읽을 수 있는 식을 칸으로 옮긴다.
+            if new == .cron, let c = spec(for: old)?.cron { cronText = c }
+            if old == .cron, TimeSpec(cron: cronText) != nil {
+                let f = EditView.fill(from: cronText)
+                if new == .pick, f.dayChoice == .pick { days = f.days }
+                repeating = f.repeating
+                times = f.times.map { TimeSlot(date: EditView.clock($0)) }
+                every = f.every
+                allDay = f.allDay
+                (from, to) = (EditView.clock(f.from), EditView.clock(f.to))
+            }
         }
         .onChange(of: draft.task) { _, new in
             // 이름이 비었거나 템플릿 제목을 그대로 쓰던 중이면 새 템플릿 제목으로 바꾼다.
@@ -1442,68 +1497,79 @@ struct EditView: View {
         }
     }
 
-    var modePicker: some View {
-        Dropdown(selection: $mode, options: TimeMode.allCases.map { (value: $0, label: $0.rawValue) })
-    }
-
-    /// 시각은 한 줄: [방식 ▾] [그 방식의 입력]
-    @ViewBuilder
+    /// 시각 — [요일 ▾] [정한 시각 | 반복], 그 아래 요일 칩 · 시각 칸.
     var timeRow: some View {
-        switch mode {
-        case .daily, .weekdays:
-            HStack(spacing: 8) { modePicker; timeField }
-        case .weekly:
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { modePicker; dayButtons; timeField }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) { modePicker; timeField }
-                    dayButtons
-                }
-            }
-        case .multi:
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    modePicker
-                    Picker("", selection: $multiWeekdays) {
-                        Text("매일").tag(false)
-                        Text("평일").tag(true)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Dropdown(selection: $dayChoice, options: DayChoice.allCases.map { (value: $0, label: $0.rawValue) })
+                if dayChoice != .cron {
+                    Picker("", selection: $repeating) {
+                        Text("정한 시각").tag(false)
+                        Text("반복").tag(true)
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                FlowRow(spacing: 10) {
-                    ForEach($times) { $slot in
-                        HStack(spacing: 2) {
-                            clockField($slot.date)
-                            Button {
-                                times.removeAll { $0.id == slot.id }
-                            } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                            .buttonStyle(.icon)
-                            .disabled(times.count <= 1)
-                            .help("이 시각 빼기")
-                        }
-                    }
-                    Button(action: addTime) { Label("추가", systemImage: "plus") }
-                        .buttonStyle(.icon).font(.caption)
-                        .help("시각 하나 더하기")
-                }
             }
-        case .every:
-            HStack(spacing: 6) {
-                modePicker
-                TextField("30", value: $every, format: .number).textFieldStyle(.roundedBorder).frame(width: 52)
-                Text("분마다").foregroundStyle(.secondary)
-            }
-        case .cron:
-            HStack(spacing: 8) {
-                modePicker
+            if dayChoice == .pick { dayButtons }
+            if dayChoice == .cron {
                 TextField("분 시 일 월 요일", text: $cronText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.callout, design: .monospaced))
+            } else if repeating {
+                repeatRow
+            } else {
+                timesRow
             }
         }
     }
 
-    var timeField: some View { clockField($time) }
+    /// 정한 시각 — 칸 여럿 + 추가.
+    var timesRow: some View {
+        FlowRow(spacing: 10) {
+            ForEach($times) { $slot in
+                HStack(spacing: 2) {
+                    clockField($slot.date)
+                    Button {
+                        times.removeAll { $0.id == slot.id }
+                    } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.icon)
+                    .disabled(times.count <= 1)
+                    .help("이 시각 빼기")
+                }
+            }
+            Button(action: addTime) { Label("추가", systemImage: "plus") }
+                .buttonStyle(.icon).font(.caption)
+                .help("시각 하나 더하기")
+        }
+    }
+
+    /// 반복 — [N] 분마다 [종일 | 구간] (구간이면 시작 ~ 끝, 끝 시각 포함).
+    var repeatRow: some View {
+        let interval = HStack(spacing: 6) {
+            TextField("30", value: $every, format: .number).textFieldStyle(.roundedBorder).frame(width: 52)
+            Text("분마다").foregroundStyle(.secondary)
+            Picker("", selection: $allDay) {
+                Text("종일").tag(true)
+                Text("구간").tag(false)
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+        }
+        let window = HStack(spacing: 4) {
+            clockField($from)
+            Text("~").foregroundStyle(.secondary)
+            clockField($to)
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                interval
+                if !allDay { window }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                interval
+                if !allDay { window }
+            }
+        }
+    }
 
     func clockField(_ value: Binding<Date>) -> some View {
         DatePicker("", selection: value, displayedComponents: .hourAndMinute)
@@ -1515,12 +1581,12 @@ struct EditView: View {
 
     /// 마지막 시각에서 한 시간씩 뒤로 가며 아직 없는 시각을 더한다.
     func addTime() {
-        let taken = Set(times.map { EditView.hm($0.date) }.map { $0.h * 60 + $0.m })
-        let (h, m) = EditView.hm(times.last?.date ?? time)
+        let taken = Set(times.map { EditView.minute($0.date) })
+        let last = times.last.map { EditView.minute($0.date) } ?? 540
         for step in 1...24 {
-            let nh = (h + step) % 24
-            if !taken.contains(nh * 60 + m) {
-                times.append(TimeSlot(date: EditView.clock(nh, m)))
+            let t = (last + step * 60) % 1440
+            if !taken.contains(t) {
+                times.append(TimeSlot(date: EditView.clock(t)))
                 return
             }
         }

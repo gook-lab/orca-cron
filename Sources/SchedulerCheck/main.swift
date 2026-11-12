@@ -455,6 +455,80 @@ do {
     check(Cron("0 9 * * 1; 0 18 * * *")?.summary == "매주 월 09:00 / 매일 18:00", "요일이 다르면 따로 씀")
 }
 
+// MARK: 시각 — 요일 + 정한 시각 / 구간 반복
+do {
+    func spec(_ d: TimeSpec.Days, _ p: TimeSpec.Pattern) -> TimeSpec { TimeSpec(days: d, pattern: p) }
+    func roundTrip(_ t: TimeSpec, _ what: String) {
+        let back = t.cron.flatMap { TimeSpec(cron: $0) }
+        check(back == t, "왕복 \(what)", "→ \(t.cron ?? "nil") → \(String(describing: back))")
+    }
+
+    // 구간 반복 — 사용자 예시: 07:00~08:00 5분마다(끝 포함)
+    let win = spec(.everyDay, .every(5, from: 420, to: 480))
+    check(win.cron == "*/5 7 * * *; 0 8 * * *", "구간 반복 cron", win.cron ?? "nil")
+    check(win.summary == "매일 07:00~08:00 5분마다", "구간 반복 설명", win.summary)
+    check(win.runsPerDay == 13, "07:00~08:00 5분마다 = 13번", "\(win.runsPerDay)")
+    roundTrip(win, "구간 반복")
+    check(next(win.cron!, at(2026, 11, 11, 7, 57)) == at(2026, 11, 11, 8, 0), "구간 끝 시각도 돈다")
+    check(next(win.cron!, at(2026, 11, 11, 8, 0)) == at(2026, 11, 12, 7, 0), "구간이 끝나면 다음 날 시작")
+    check(Cron(win.cron!)?.summary == "매일 07:00~08:00 5분마다", "목록 줄 설명도 같음")
+
+    // 종일
+    check(spec(.everyDay, .every(5, from: 0, to: 1439)).cron == "*/5 * * * *", "종일 5분마다 cron")
+    check(spec(.everyDay, .every(5, from: 0, to: 1439)).summary == "5분마다", "종일 매일은 「N분마다」만")
+    check(TimeSpec(cron: "*/10 * * * *") == spec(.everyDay, .every(10, from: 0, to: 1439)), "*/10 → 종일 10분마다")
+    check(spec(.weekdays, .every(30, from: 0, to: 1439)).summary == "평일 30분마다", "평일 종일")
+    check(spec(.everyDay, .every(120, from: 0, to: 1439)).cron == "0 */2 * * *", "2시간마다 cron")
+    check(spec(.everyDay, .every(120, from: 0, to: 1439)).summary == "2시간마다", "2시간마다 설명")
+    roundTrip(spec(.everyDay, .every(90, from: 0, to: 1439)), "90분마다")
+    check(spec(.everyDay, .every(90, from: 0, to: 1439)).summary == "1시간 30분마다", "90분 설명")
+
+    // 60 으로 나누어떨어지지 않는 간격은 시를 넘어도 이어진다(cron `*/7` 은 매시 0분에 다시 시작)
+    let seven = spec(.weekdays, .every(7, from: 0, to: 1439))
+    roundTrip(seven, "7분마다")
+    check(next(seven.cron!, at(2026, 11, 11, 0, 56)) == at(2026, 11, 11, 1, 3), "7분마다 — 00:56 다음은 01:03")
+    check(TimeSpec(cron: "*/7 * * * *") == nil, "옛 */7 은 cron 직접으로 연다")
+
+    // 구간 끝이 간격에 맞지 않으면 마지막으로 도는 시각으로 다시 열린다
+    let odd = spec(.everyDay, .every(15, from: 430, to: 540))
+    check(odd.cron.flatMap { TimeSpec(cron: $0) } == spec(.everyDay, .every(15, from: 430, to: 535)), "07:10~09:00 15분 → 끝 08:55",
+          odd.cron ?? "nil")
+
+    // 정한 시각
+    let two = spec(.some([1, 3]), .times([540, 1080]))
+    check(two.cron == "0 9,18 * * 1,3", "정한 시각 cron", two.cron ?? "nil")
+    check(two.summary == "매주 월·수 09:00 · 18:00", "정한 시각 설명", two.summary)
+    roundTrip(two, "정한 시각")
+    roundTrip(spec(.weekdays, .times([570, 1080])), "분이 다른 시각")
+    check(TimeSpec(cron: "0 9,10,11 * * *")?.pattern == .times([540, 600, 660]), "쉼표로 이은 시각은 같은 간격이어도 정한 시각")
+    check(spec(.everyDay, .times([540, 600, 660])).cron == "0 9,10,11 * * *", "정한 시각은 범위로 줄이지 않는다")
+    check(spec(.some([0, 6]), .times([600])).summary == "매주 토·일 10:00", "요일은 월요일부터")
+
+    // 지금 저장된 예약 모양은 그대로 열린다
+    for (cron, want) in [("3 0,6,12,18 * * *", [3, 363, 723, 1083]), ("13 12,19 * * *", [733, 1153]),
+                         ("0 9,14 * * *", [540, 840]), ("0 9 * * *", [540])] {
+        let t = TimeSpec(cron: cron)
+        check(t == spec(.everyDay, .times(want)), "기존 예약 \(cron)", String(describing: t))
+        check(t?.cron == cron, "기존 예약 \(cron) 다시 저장해도 같은 식", t?.cron ?? "nil")
+    }
+    check(TimeSpec(cron: "0 9-18 * * 1-5") == spec(.weekdays, .every(60, from: 540, to: 1080)), "0 9-18 → 09:00~18:00 1시간마다")
+    check(Cron("0 9-18 * * 1-5")?.summary == "평일 09:00~18:00 1시간마다", "1시간마다 설명")
+    check(TimeSpec(cron: "15 * * * *") == spec(.everyDay, .every(60, from: 15, to: 1439)), "15 * → 매시 15분")
+
+    // 열 수 없는 모양
+    check(TimeSpec(cron: "0 9 1 * *") == nil, "날짜를 정한 식은 cron 직접")
+    check(TimeSpec(cron: "0 9 * * 1; 0 18 * * *") == nil, "식마다 요일이 다르면 cron 직접")
+
+    // 요일 정리 · 막는 값
+    check(TimeSpec.Days.of(Set(1...5)) == .weekdays && TimeSpec.Days.of(Set(0...6)) == .everyDay, "요일 고르기 → 평일·매일")
+    check(spec(.some([]), .times([540])).cron == nil, "요일 없음")
+    check(spec(.everyDay, .times([])).cron == nil, "시각 없음")
+    check(spec(.everyDay, .every(0, from: 0, to: 1439)).cron == nil, "간격 0")
+    check(spec(.everyDay, .every(721, from: 0, to: 1439)).cron == nil, "간격 720 넘음")
+    check(spec(.everyDay, .every(5, from: 600, to: 540)).cron == nil, "끝이 시작보다 빠름")
+    check(spec(.everyDay, .every(60, from: 600, to: 600)).runsPerDay == 1, "시작=끝이면 한 번")
+}
+
 // MARK: 입력 칸 판정 — 글자·가로줄 변형
 do {
     let heavy = String(repeating: "━", count: 30)
@@ -588,6 +662,81 @@ do {
     check(d.clearFirst == true && d.lateLimit == 3600 && d.enabled == false, "복제는 선택 칸도 옮김")
     check(d.history.isEmpty && d.lastStatus == nil && d.pendingSince == nil && d.runId == nil && d.nextRunAt == nil,
           "복제는 실행 기록·대기 상태를 비움")
+}
+
+// MARK: 실행 기록 보관 — 날짜별 · 한 쪽 10개
+do {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("orcacron-archive-\(UUID().uuidString)")
+    let paths = Paths(base: tmp)
+    try? paths.ensure()
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    func rec(_ d: Date, _ status: String = "성공") -> RunRecord { RunRecord(at: d, status: status) }
+    func sched(_ history: [RunRecord]) -> Schedule {
+        var s = Schedule(id: "s-arch", name: "a", terminal: TerminalRef(handle: "h", label: "l"), cron: "0 9 * * *", task: "x")
+        s.history = history
+        return s
+    }
+
+    let r1 = rec(at(2026, 11, 10, 9, 0)), r2 = rec(at(2026, 11, 11, 9, 0)), r3 = rec(at(2026, 11, 11, 18, 0), "실패")
+    check(RunArchive.added(old: sched([r1]), new: sched([r3, r2, r1])) == [r2, r3], "새 기록만 · 오래된 것부터")
+    check(RunArchive.added(old: nil, new: sched([r1])) == [r1], "새 예약은 전부")
+    check(RunArchive.added(old: sched([r1]), new: sched([r1])).isEmpty, "그대로면 없음")
+
+    // 처음엔 가진 최근 기록 전부로 시작, 그다음은 새 것만 덧붙인다
+    let now = at(2026, 11, 11, 18, 1)
+    RunArchive.record(old: StoreFile(schedules: [sched([r1])]), new: StoreFile(schedules: [sched([r2, r1])]), paths, now: now)
+    check(RunArchive.load("s-arch", fallback: [], paths) == [r2, r1], "처음 쓸 때 최근 기록으로 시작")
+    RunArchive.record(old: StoreFile(schedules: [sched([r2, r1])]), new: StoreFile(schedules: [sched([r3, r2, r1])]), paths, now: now)
+    check(RunArchive.load("s-arch", fallback: [], paths) == [r3, r2, r1], "새 기록 덧붙임 · 새것이 위")
+    check(RunArchive.load("없음", fallback: [r1], paths) == [r1], "파일이 없으면 최근 기록")
+
+    // schedules.json 이 10개로 잘려도 보관은 계속 쌓인다
+    var many = sched([r3, r2, r1])
+    var before = many
+    for i in 1...12 {
+        before = many
+        many.history.insert(rec(at(2026, 11, 12, 0, i)), at: 0)
+        if many.history.count > Schedule.historyLimit { many.history.removeLast() }
+        RunArchive.record(old: StoreFile(schedules: [before]), new: StoreFile(schedules: [many]), paths, now: now)
+    }
+    check(RunArchive.load("s-arch", fallback: [], paths).count == 15, "10개를 넘어도 보관", "\(RunArchive.load("s-arch", fallback: [], paths).count)")
+
+    // 1회 보내기는 쌓지 않는다
+    var once = sched([r1])
+    once.id = "once-x"
+    once.oneShot = true
+    RunArchive.record(old: StoreFile(), new: StoreFile(schedules: [once]), paths, now: now)
+    check(!FileManager.default.fileExists(atPath: paths.history.appendingPathComponent("once-x.jsonl").path), "1회 보내기는 쌓지 않음")
+
+    // 30일 넘은 기록은 지운다
+    let old = rec(at(2026, 9, 1, 9, 0))
+    var aged = sched([r1, old])
+    aged.id = "s-aged"
+    RunArchive.record(old: StoreFile(), new: StoreFile(schedules: [aged]), paths, now: now)
+    var aged2 = aged
+    aged2.history.insert(r2, at: 0)
+    RunArchive.record(old: StoreFile(schedules: [aged]), new: StoreFile(schedules: [aged2]), paths, now: now)
+    check(RunArchive.load("s-aged", fallback: [], paths) == [r2, r1], "30일 지난 기록 지움")
+
+    // 날짜 · 쪽
+    let day = at(2026, 11, 12, 0, 0)
+    let list = (0..<23).map { rec(at(2026, 11, 12, 9, 59 - $0)) } + [r3, r2, r1]
+    check(RunArchive.days(list, calendar: cal) == [day, at(2026, 11, 11, 0, 0), at(2026, 11, 10, 0, 0)], "기록 있는 날 · 새 날이 위")
+    let p0 = RunArchive.page(list, day: day, page: 0, calendar: cal)
+    let p2 = RunArchive.page(list, day: day, page: 2, calendar: cal)
+    check(p0.items.count == 10 && p0.total == 23 && p0.items.first == list[0], "첫 쪽 10개 · 그날 23개")
+    check(p2.items.count == 3 && p2.items.last == list[22], "셋째 쪽 3개")
+    check(RunArchive.page(list, day: day, page: 3, calendar: cal).items.isEmpty, "넘친 쪽은 빔")
+    check(RunArchive.page(list, day: at(2026, 11, 9, 0, 0), page: 0, calendar: cal).total == 0, "기록 없는 날")
+
+    // 지운 예약의 기록 — 하루 지나면 지운다
+    let orphan = paths.history.appendingPathComponent("s-gone.jsonl")
+    try? Data().write(to: orphan)
+    RunArchive.removeOrphans(keeping: ["s-arch"], paths, now: Date())
+    check(FileManager.default.fileExists(atPath: orphan.path), "방금 지운 예약 기록은 남김(되돌리기)")
+    RunArchive.removeOrphans(keeping: ["s-arch"], paths, now: Date().addingTimeInterval(2 * 86400))
+    check(!FileManager.default.fileExists(atPath: orphan.path), "하루 지난 고아 기록 지움")
+    check(FileManager.default.fileExists(atPath: paths.history.appendingPathComponent("s-arch.jsonl").path), "있는 예약 기록은 남김")
 }
 
 print(failures == 0 ? "✓ 점검 \(checks)개 통과" : "✗ 점검 \(checks)개 중 \(failures)개 실패")

@@ -22,8 +22,9 @@ public struct Cron: Equatable, Sendable {
         rules.compactMap { $0.next(after: date, calendar: calendar) }.min()
     }
 
-    /// 같은 요일 칸의 「분 시 * * 요일」 식들이면 시각을 모아 한 줄로 쓴다.
+    /// 편집 화면이 만드는 모양(정한 시각 · 구간 반복)이면 그 설명. 아니면 식마다 풀어 쓴다.
     public var summary: String {
+        if let spec = TimeSpec(cron: expression) { return spec.summary }
         guard rules.count > 1 else { return rules[0].summary }
         let dow = rules[0].part(4)
         if rules.allSatisfy({ $0.isDailyTimes && $0.part(4) == dow }) {

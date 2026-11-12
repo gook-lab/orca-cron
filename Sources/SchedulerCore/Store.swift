@@ -21,9 +21,10 @@ public struct Paths: Sendable {
     public var results: URL { base.appendingPathComponent("results", isDirectory: true) }
     public var inbox: URL { base.appendingPathComponent("inbox", isDirectory: true) }
     public var log: URL { base.appendingPathComponent("log.txt") }
+    public var history: URL { base.appendingPathComponent("history", isDirectory: true) }
 
     public func ensure() throws {
-        for dir in [base, tasks, results, inbox] {
+        for dir in [base, tasks, results, inbox, history] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

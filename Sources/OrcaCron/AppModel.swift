@@ -68,6 +68,7 @@ final class AppModel: ObservableObject {
         tasks = Store.listTasks(paths)
         if port == nil { problem = "Orca CLI 를 찾지 못했습니다(/Applications/Orca*.app)." }
         if sending {
+            if !loadFailed { RunArchive.removeOrphans(keeping: Set(store.schedules.map(\.id)), paths, now: Date()) }
             timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
@@ -180,6 +181,7 @@ final class AppModel: ObservableObject {
                     let old = self.store
                     self.store = Engine.merge(before: before, after: finished, current: self.store)
                     self.notifyChanges(old: old, new: self.store)
+                    RunArchive.record(old: old, new: self.store, paths, now: now)
                     self.persist()
                     Store.removeResults(results.map(\.0) + requests.map(\.0))
                     Store.appendLog(lines, paths, now: now)
@@ -195,6 +197,9 @@ final class AppModel: ObservableObject {
             }
         }
     }
+
+    /// 날짜별로 보는 실행 기록(최근 30일) — 새것이 위.
+    func history(_ s: Schedule) -> [RunRecord] { RunArchive.load(s.id, fallback: s.history, paths) }
 
     private func persist() {
         guard !loadFailed, sending else { return }

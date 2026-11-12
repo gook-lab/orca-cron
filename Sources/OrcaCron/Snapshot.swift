@@ -2,12 +2,12 @@ import AppKit
 import SwiftUI
 import SchedulerCore
 
-/// `OrcaCron preview <png> [list|collapsed|update|edit|new|send|command|templates|template]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
+/// `OrcaCron preview <png> [list|collapsed|update|edit|new|multi|send|command|templates|template|history]` — 메뉴 화면을 창에 그려 PNG 로 남긴다. 아무것도 보내지 않는다.
 /// `command` 의 입력 글은 ORCA_CRON_PREVIEW_TEXT 로 바꿀 수 있다(기본 `/zm`).
 enum Preview {
     static func run(_ args: [String]) -> Never {
         guard let out = args.first else {
-            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|collapsed|update|edit|new|send|command|templates|template]\n".utf8))
+            FileHandle.standardError.write(Data("사용법: OrcaCron preview <png 경로> [list|collapsed|update|edit|new|multi|send|command|templates|template|history]\n".utf8))
             exit(2)
         }
         let which = args.dropFirst().first ?? "list"
@@ -24,9 +24,10 @@ enum Preview {
                 if let s = model.store.schedules.first(where: { !$0.isOneShot }) { model.delete(s.id) }  // 미리보기는 저장하지 않는다
                 screen = .list
             case "multi":
+                // ORCA_CRON_PREVIEW_CRON 으로 시각을 바꿔 그린다(예: 구간 반복 `*/5 7 * * 1-5; 0 8 * * 1-5`).
                 var d = model.newDraft()
                 d.name = "하루 두 번 점검"
-                d.cron = "30 9 * * 1-5; 0 18 * * 1-5"
+                d.cron = ProcessInfo.processInfo.environment["ORCA_CRON_PREVIEW_CRON"] ?? "30 9 * * 1-5; 0 18 * * 1-5"
                 screen = .edit(d, isNew: true)
             case "send": screen = .send(handle: first?.terminal.handle ?? "", task: nil)
             case "templates": screen = .templates
@@ -40,7 +41,10 @@ enum Preview {
                 screen = .list
             default: screen = .list
             }
-            let root = which == "command"
+            let historyOf = model.store.schedules.first { !$0.history.isEmpty }
+            let root = which == "history" && historyOf != nil
+                ? AnyView(HistoryPanel(model: model, schedule: historyOf!).padding(12).frame(width: 380, alignment: .leading))
+                : which == "command"
                 ? AnyView(SendView(model: model, handle: model.terminals.first?.handle ?? first?.terminal.handle ?? "", task: nil,
                                    text: ProcessInfo.processInfo.environment["ORCA_CRON_PREVIEW_TEXT"] ?? "/zm", cancel: {}, done: {}).completionEscape().frame(width: 400))
                 : AnyView(MenuView(model: model, windowed: false, screen: screen))
