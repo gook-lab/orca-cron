@@ -6,7 +6,7 @@ Orca 에 떠 있는 터미널에 보내는 방식이라 Orca 가 꺼져 있거�
 
 ## 지원 에이전트 — Claude Code · Codex · Gemini CLI
 
-Orca 터미널 목록의 에이전트 표시(`agentIdentity`)가 `claude`·`codex`·`gemini` 인 터미널에 보냅니다. 목록의 터미널 줄과 터미널 고르기 칸 앞의 작은 아이콘이 그 터미널의 에이전트입니다 — 별표는 Claude Code, 코드 괄호(`</>`)는 Codex, 반짝임은 Gemini CLI. 탭이 닫혀도 마지막에 본 에이전트 아이콘을 흐리게 남깁니다.
+Orca 터미널 목록의 에이전트 표시(`agentIdentity`)가 `claude`·`codex`·`gemini` 인 터미널에 보냅니다. 목록의 터미널 줄과 터미널 고르기 칸 앞의 작은 아이콘이 그 터미널의 에이전트입니다 — 별표는 Claude Code, `>_` 는 Codex(Codex CLI 머리줄과 같은 모양), 반짝임은 Gemini CLI. 탭이 닫혀도 마지막에 본 에이전트 아이콘을 흐리게 남깁니다.
 
 | 에이전트 | 입력 칸 판정 | 권한 창 판정 | 확인한 것 |
 |---|---|---|---|

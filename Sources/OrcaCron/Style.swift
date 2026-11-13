@@ -215,11 +215,11 @@ struct Dropdown<Value: Hashable>: View {
 // MARK: 에이전트 아이콘
 
 extension AgentKind {
-    /// 상표 그림 대신 시스템 아이콘 — Claude 는 별표, Codex 는 코드 괄호, Gemini 는 반짝임.
+    /// 상표 그림 대신 시스템 아이콘 — Claude 는 별표, Codex 는 `>_`(Codex CLI 머리줄 「>_ OpenAI Codex」와 같은 모양), Gemini 는 반짝임.
     var symbol: String {
         switch self {
         case .claude: "asterisk"
-        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .codex: "terminal"
         case .gemini: "sparkle"
         }
     }
