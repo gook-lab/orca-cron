@@ -19,7 +19,7 @@ enum CLI {
           OrcaCron finish --run <run id> --status <성공|실패|건너뜀> --summary "<한 줄 요약>" [--link <URL>]
           OrcaCron status
           OrcaCron send --terminal <핸들> (--text "<글>" | --template <키>) [--track] [--name "<이름>"]
-          OrcaCron test --terminal <핸들>      받는 Claude 가 결과 명령까지 실행하는지 한 번 확인
+          OrcaCron test --terminal <핸들>      받는 에이전트가 결과 명령까지 실행하는지 한 번 확인
           OrcaCron preview <png 경로> [list|collapsed|update|undo|edit|new|multi|send|command|templates|template]
 
         """
@@ -64,15 +64,15 @@ enum CLI {
             opts[String(key.dropFirst(2))] = args[i + 1]
             i += 2
         }
-        let claude = OrcaCLI.locate().flatMap { try? OrcaCLI(binary: $0).list() }?.filter { $0.agent == "claude" } ?? []
+        let agents = OrcaCLI.locate().flatMap { try? OrcaCLI(binary: $0).list() }?.filter { $0.kind != nil } ?? []
         guard let handle = opts["terminal"], !handle.isEmpty else {
-            var text = "--terminal 이 필요합니다. 지금 떠 있는 Claude Code 터미널:\n"
-            text += claude.isEmpty ? "  (없음 — Orca 가 켜져 있는지 확인)\n" : claude.map { "  \($0.handle)  \($0.displayName)\n" }.joined()
+            var text = "--terminal 이 필요합니다. 지금 떠 있는 에이전트 터미널(Claude Code·Codex·Gemini):\n"
+            text += agents.isEmpty ? "  (없음 — Orca 가 켜져 있는지 확인)\n" : agents.map { "  \($0.handle)  \($0.displayName) · \($0.kind?.displayName ?? "")\n" }.joined()
             FileHandle.standardError.write(Data(text.utf8))
             return 2
         }
-        if !claude.isEmpty, !claude.contains(where: { $0.handle == handle }) {
-            FileHandle.standardError.write(Data("Claude Code 터미널 \(handle) 를 찾지 못했습니다. OrcaCron send 를 --terminal 없이 실행하면 목록이 나옵니다.\n".utf8))
+        if !agents.isEmpty, !agents.contains(where: { $0.handle == handle }) {
+            FileHandle.standardError.write(Data("에이전트 터미널 \(handle) 를 찾지 못했습니다. OrcaCron send 를 --terminal 없이 실행하면 목록이 나옵니다.\n".utf8))
             return 1
         }
         let paths = Paths.standard()

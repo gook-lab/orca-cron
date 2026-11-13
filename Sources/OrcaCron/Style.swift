@@ -1,4 +1,5 @@
 import AppKit
+import SchedulerCore
 import SwiftUI
 
 /// 아이콘·글자 버튼 — 올리면 배경이 깔리고 글자가 진해진다. 눌린 동안은 더 진하게.
@@ -163,6 +164,8 @@ struct Dropdown<Value: Hashable>: View {
     var fill = false
     /// 목록 맨 아래 구분선 뒤에 붙는 동작 하나(예: 새 템플릿 만들기…).
     var extra: (label: String, action: () -> Void)?
+    /// 펼친 목록의 항목 앞 아이콘(SF Symbol 이름). 메뉴 안이라 색은 빠지고 모양만 보인다.
+    var symbol: (Value) -> String? = { _ in nil }
 
     var current: String { options.first { $0.value == selection }?.label ?? placeholder }
     @State private var hover = false
@@ -171,7 +174,12 @@ struct Dropdown<Value: Hashable>: View {
         Menu {
             ForEach(options.indices, id: \.self) { i in
                 let o = options[i]
-                Toggle(o.label, isOn: Binding(get: { o.value == selection }, set: { if $0 { selection = o.value } }))
+                let on = Binding(get: { o.value == selection }, set: { if $0 { selection = o.value } })
+                if let name = symbol(o.value) {
+                    Toggle(isOn: on) { Label(o.label, systemImage: name) }
+                } else {
+                    Toggle(o.label, isOn: on)
+                }
             }
             if let extra {
                 Divider()
@@ -201,6 +209,49 @@ struct Dropdown<Value: Hashable>: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize(horizontal: !fill, vertical: true)
+    }
+}
+
+// MARK: 에이전트 아이콘
+
+extension AgentKind {
+    /// 상표 그림 대신 시스템 아이콘 — Claude 는 별표, Codex 는 코드 괄호, Gemini 는 반짝임.
+    var symbol: String {
+        switch self {
+        case .claude: "asterisk"
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .gemini: "sparkle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .claude: .themed(light: NSColor(srgbRed: 178 / 255, green: 80 / 255, blue: 46 / 255, alpha: 1),
+                              dark: NSColor(srgbRed: 232 / 255, green: 140 / 255, blue: 105 / 255, alpha: 1))
+        case .codex: .primary
+        case .gemini: .themed(light: NSColor(srgbRed: 52 / 255, green: 92 / 255, blue: 214 / 255, alpha: 1),
+                              dark: NSColor(srgbRed: 138 / 255, green: 170 / 255, blue: 248 / 255, alpha: 1))
+        }
+    }
+}
+
+/// 그 터미널에 뜬 에이전트를 작은 칸 하나로 보여 준다. 모르면 자리만 비워 둬 줄이 흔들리지 않게 한다.
+struct AgentBadge: View {
+    let kind: AgentKind?
+    var size: CGFloat = 14
+
+    var body: some View {
+        ZStack {
+            if let kind {
+                RoundedRectangle(cornerRadius: 3.5).fill(kind.tint.opacity(0.14))
+                Image(systemName: kind.symbol)
+                    .font(.system(size: size * 0.6, weight: .bold))
+                    .foregroundStyle(kind.tint)
+            }
+        }
+        .frame(width: size, height: size)
+        .help(kind?.displayName ?? "")
+        .accessibilityLabel(kind?.displayName ?? "에이전트 모름")
     }
 }
 

@@ -223,7 +223,7 @@ struct ListView: View {
             let active = groups.filter { !$0.schedules.isEmpty || $0.live == nil }
             let idle = groups.filter { $0.schedules.isEmpty && $0.live != nil }
             if groups.isEmpty {
-                Text("Orca 에 떠 있는 Claude Code 터미널이 없습니다.")
+                Text("Orca 에 떠 있는 에이전트 터미널(Claude Code·Codex·Gemini)이 없습니다.")
                     .font(.callout).foregroundStyle(.secondary)
                     .padding(Pad.h)
                 if windowed { Spacer() }
@@ -458,6 +458,8 @@ struct GroupHeader: View {
                 Circle()
                     .fill(group.live == nil ? Color.bad : (empty ? Color.secondary.opacity(0.5) : Color.ok))
                     .frame(width: 7, height: 7)
+                AgentBadge(kind: group.live?.kind ?? group.schedules.first?.terminal.kind)
+                    .opacity(group.live == nil ? 0.6 : 1)
                 if let t = group.live {
                     Text(t.place.isEmpty ? "터미널" : t.place).font(.caption.weight(.semibold))
                         .foregroundStyle(empty ? .secondary : .primary)
@@ -993,9 +995,15 @@ struct TerminalPicker: View {
         return out
     }
 
+    var kind: AgentKind? { model.terminals.first { $0.handle == handle }?.kind ?? fallbackKind }
+    /// 터미널이 지금 없을 때 예약에 남아 있던 에이전트.
+    var fallbackKind: AgentKind?
+
     var body: some View {
         HStack(spacing: 6) {
-            Dropdown(selection: $handle, options: options, fill: true)
+            AgentBadge(kind: kind, size: 16)
+            Dropdown(selection: $handle, options: options, fill: true,
+                     symbol: { h in model.terminals.first { $0.handle == h }?.kind?.symbol })
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.icon).help("터미널 목록 다시 읽기")
         }
@@ -1355,7 +1363,7 @@ struct FirstRunHint: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("처음 쓰신다면").font(.caption.weight(.semibold))
-            Text("터미널 줄의 \(Image(systemName: "calendar.badge.plus")) 로 예약을, \(Image(systemName: "paperplane")) 로 한 번 보내기를 만듭니다. 쓰던 터미널에 걸어도 됩니다 — 화면이 조용해질 때까지 기다렸다 보냅니다. Orca 가 꺼져 있거나 그 탭이 닫혀 있으면 그 회차는 건너뜁니다. 받는 Claude 가 결과까지 남기는지는 터미널 줄 우클릭 → 「연결 시험 보내기」로 먼저 확인해 보세요.")
+            Text("터미널 줄의 \(Image(systemName: "calendar.badge.plus")) 로 예약을, \(Image(systemName: "paperplane")) 로 한 번 보내기를 만듭니다. 쓰던 터미널에 걸어도 됩니다 — 화면이 조용해질 때까지 기다렸다 보냅니다. Orca 가 꺼져 있거나 그 탭이 닫혀 있으면 그 회차는 건너뜁니다. 받는 에이전트가 결과까지 남기는지는 터미널 줄 우클릭 → 「연결 시험 보내기」로 먼저 확인해 보세요.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1580,7 +1588,8 @@ struct EditView: View {
                     TextField("예: 매일 아침 오류 요약", text: $draft.name).textFieldStyle(.roundedBorder)
                 }
                 FormRow(title: "터미널") {
-                    TerminalPicker(model: model, handle: $draft.terminal.handle, fallbackLabel: draft.terminal.label)
+                    TerminalPicker(model: model, handle: $draft.terminal.handle, fallbackLabel: draft.terminal.label,
+                                   fallbackKind: draft.terminal.kind)
                 }
                 FormRow(title: "내용") {
                     Picker("", selection: $useTemplate) {
@@ -1857,7 +1866,7 @@ struct SendView: View {
                     } label: { Label("연결 시험 보내기", systemImage: "checkmark.seal") }
                     .buttonStyle(.icon).font(.caption)
                     .disabled(handle.isEmpty)
-                    .help("받는 Claude 가 글을 받고 결과 명령까지 실행하는지 한 번 확인합니다. 결과는 목록에 「연결 시험」으로 남습니다")
+                    .help("받는 에이전트가 글을 받고 결과 명령까지 실행하는지 한 번 확인합니다. 결과는 목록에 「연결 시험」으로 남습니다")
                 }
                 FormRow(title: "내용") {
                     Picker("", selection: $useTemplate) {
@@ -1877,7 +1886,7 @@ struct SendView: View {
                     Toggle("끝나면 결과를 메뉴바에 남기게 하기", isOn: $track).toggleStyle(.checkbox)
                         .disabled(isCommand)
                     Text(isCommand ? "명령은 결과를 받을 수 없습니다." : track
-                         ? "보내는 글 끝에 결과 명령이 붙고, 그 터미널의 Claude 가 마치면 결과가 목록에 남습니다."
+                         ? "보내는 글 끝에 결과 명령이 붙고, 그 터미널의 에이전트가 마치면 결과가 목록에 남습니다."
                          : "쓴 글을 그대로 보냅니다.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2101,7 +2110,7 @@ struct TemplateEditView: View {
                             .font(.caption).foregroundStyle(Color.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("받는 터미널의 Claude 가 이 내용을 읽고 그대로 실행합니다. 경로·대상을 빠짐없이 적으세요.")
+                    Text("받는 터미널의 에이전트가 이 내용을 읽고 그대로 실행합니다. 경로·대상을 빠짐없이 적으세요.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let key {

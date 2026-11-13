@@ -161,7 +161,7 @@ public enum Engine {
             }
             guard port.isIdle(t.handle) else { waitOrGiveUp("터미널이 작업 중"); continue }
             let tail = port.screenTail(t.handle)
-            switch promptState(screenTail: tail) {
+            switch promptState(screenTail: tail, agent: t.kind ?? s.terminal.kind ?? .claude) {
             case .empty: break
             case .typing: waitOrGiveUp("입력 칸에 쓰던 글이 있음"); continue
             case .unknown:
@@ -240,7 +240,7 @@ public enum Engine {
         let tail = port.screenTail(t.handle)
         if permissionPrompt(screenTail: tail) { return "권한 확인 창에서 멈춤 — 그 터미널에서 허용해 주세요" }
         guard port.isIdle(t.handle) else { return nil }
-        switch promptState(screenTail: tail) {
+        switch promptState(screenTail: tail, agent: t.kind ?? .claude) {
         case .unknown:
             return "질문·선택 창에서 멈춘 것 같음 — 그 터미널을 확인해 주세요"
         case .empty:
@@ -279,11 +279,14 @@ public enum Engine {
                     store.schedules[i].terminal.tabId = live.tabId
                     store.schedules[i].terminal.leafId = live.leafId
                 }
+                // 같은 터미널에서 다른 에이전트를 띄웠으면 아이콘도 따라간다. 에이전트가 꺼진 동안(nil)은 그대로 둔다.
+                if live.kind != nil, ref.agent != live.agent { store.schedules[i].terminal.agent = live.agent }
                 continue
             }
             guard let tab = ref.tabId, let leaf = ref.leafId,
                   let found = terminals.first(where: { $0.tabId == tab && $0.leafId == leaf }) else { continue }
             store.schedules[i].terminal.handle = found.handle
+            if found.kind != nil { store.schedules[i].terminal.agent = found.agent }
             log.append("\(store.schedules[i].name): 터미널 다시 연결 → \(found.displayName)")
         }
         return log

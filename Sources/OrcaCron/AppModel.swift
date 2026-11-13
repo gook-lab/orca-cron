@@ -187,7 +187,7 @@ final class AppModel: ObservableObject {
                     Store.appendLog(lines, paths, now: now)
                     self.updateSleepAssertion()
                 }
-                self.terminals = terms.filter { $0.agent == "claude" }
+                self.terminals = terms.filter { $0.kind != nil }
                 self.tasks = Store.listTasks(paths)
                 self.ticking = false
                 if self.tickAgain {
@@ -394,14 +394,15 @@ final class AppModel: ObservableObject {
 
     private var commandCache: [String: (at: Date, list: [ClaudeCommand])] = [:]
 
-    /// 그 터미널의 작업 폴더 기준 명령 목록. 60초 동안 기억한다.
+    /// 그 터미널의 작업 폴더 기준 명령 목록. 60초 동안 기억한다. Claude Code 명령·스킬이라 Codex·Gemini 터미널에는 띄우지 않는다.
     func commands(forTerminal handle: String) -> [ClaudeCommand] {
-        commands(projectDirs: terminals.first { $0.handle == handle }.map { [$0.worktreePath] } ?? [])
+        guard let t = terminals.first(where: { $0.handle == handle }) else { return commands(projectDirs: []) }
+        return t.kind == .claude ? commands(projectDirs: [t.worktreePath]) : []
     }
 
-    /// 템플릿은 어느 터미널로 갈지 모르므로 떠 있는 터미널들의 작업 폴더를 모두 본다.
+    /// 템플릿은 어느 터미널로 갈지 모르므로 떠 있는 Claude Code 터미널들의 작업 폴더를 모두 본다.
     var commandsForAnyTerminal: [ClaudeCommand] {
-        commands(projectDirs: Array(Set(terminals.map(\.worktreePath))).sorted())
+        commands(projectDirs: Array(Set(terminals.filter { $0.kind == .claude }.map(\.worktreePath))).sorted())
     }
 
     /// 처음 한 번만 그 자리에서 읽는다(0.1~0.2초). 60초가 지나면 가진 목록을 그대로 돌려주고 뒤에서 다시 읽어,
@@ -455,7 +456,7 @@ final class AppModel: ObservableObject {
 
     // MARK: 연결 시험 · 화면 진단
 
-    /// 받는 Claude 가 글을 받고 결과 명령까지 실행하는지 한 번 보낸다.
+    /// 받는 에이전트가 글을 받고 결과 명령까지 실행하는지 한 번 보낸다.
     func sendTest(to handle: String) {
         quickSend(to: handle, text: Engine.testPrompt, track: true)
         if let i = store.schedules.lastIndex(where: { $0.isOneShot && $0.terminal.handle == handle }) {
@@ -480,7 +481,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Claude 터미널마다 판정 결과와 화면 끝 15줄을 파일로 남기고 연다. 화면 내용이 그대로 들어가니 공유 전에 확인해야 한다.
+    /// 에이전트 터미널마다 판정 결과와 화면 끝 15줄을 파일로 남기고 연다. 화면 내용이 그대로 들어가니 공유 전에 확인해야 한다.
     func saveDiagnosis() {
         guard let port else { return }
         let terms = terminals
@@ -499,8 +500,8 @@ final class AppModel: ObservableObject {
                 let tail = port.screenTail(t.handle)
                 out += """
 
-                ## \(t.displayName) (\(t.handle))
-                대기 상태: \(port.isIdle(t.handle) ? "idle" : "작업 중") · 입력 칸: \(promptState(screenTail: tail)) · 권한 창: \(permissionPrompt(screenTail: tail) ? "있음" : "없음")
+                ## \(t.displayName) (\(t.handle)) · \(t.kind?.displayName ?? "에이전트 없음")
+                대기 상태: \(port.isIdle(t.handle) ? "idle" : "작업 중") · 입력 칸: \(promptState(screenTail: tail, agent: t.kind ?? .claude)) · 권한 창: \(permissionPrompt(screenTail: tail) ? "있음" : "없음")
                 --- 화면 끝 15줄 ---
                 \(tail.suffix(15).joined(separator: "\n"))
 
@@ -517,7 +518,7 @@ final class AppModel: ObservableObject {
 
     // MARK: 화면용 값
 
-    /// Orca 에 떠 있는 Claude 터미널 전부 + 예약은 있는데 터미널이 사라진 묶음.
+    /// Orca 에 떠 있는 에이전트 터미널(Claude Code·Codex·Gemini) 전부 + 예약은 있는데 터미널이 사라진 묶음.
     /// 예약이 있는 터미널을 위에, 없는 터미널을 아래에 둔다.
     var groups: [TerminalGroup] {
         var map: [String: TerminalGroup] = [:]

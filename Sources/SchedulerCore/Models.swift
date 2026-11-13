@@ -7,13 +7,18 @@ public struct TerminalRef: Codable, Equatable, Sendable {
     /// Orca 탭·패인 id. Orca 를 다시 켜면 handle 은 바뀌지만 이 둘은 남아 같은 터미널을 다시 찾는다.
     public var tabId: String?
     public var leafId: String?
+    /// 고를 때 그 터미널에 떠 있던 에이전트(Orca agentIdentity). 터미널이 사라져도 아이콘을 보여 주려고 남긴다.
+    public var agent: String?
 
-    public init(handle: String, label: String, tabId: String? = nil, leafId: String? = nil) {
+    public init(handle: String, label: String, tabId: String? = nil, leafId: String? = nil, agent: String? = nil) {
         self.handle = handle
         self.label = label
         self.tabId = tabId
         self.leafId = leafId
+        self.agent = agent
     }
+
+    public var kind: AgentKind? { AgentKind(identity: agent) }
 }
 
 public struct RunRecord: Codable, Equatable, Sendable {

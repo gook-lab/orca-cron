@@ -26,11 +26,13 @@ public struct TerminalInfo: Equatable, Identifiable, Sendable {
     }
 
     public var id: String { handle }
+    /// 예약을 걸 수 있는 에이전트(Claude Code·Codex·Gemini)면 그 종류, 아니면 nil.
+    public var kind: AgentKind? { AgentKind(identity: agent) }
     public var place: String { worktreePath.isEmpty ? "" : (worktreePath as NSString).lastPathComponent }
     public var displayName: String { place.isEmpty ? title : "\(place) · \(title)" }
 
     /// 예약에 저장할 연결 정보.
-    public var ref: TerminalRef { TerminalRef(handle: handle, label: displayName, tabId: tabId, leafId: leafId) }
+    public var ref: TerminalRef { TerminalRef(handle: handle, label: displayName, tabId: tabId, leafId: leafId, agent: agent) }
 }
 
 public enum SendOutcome: Equatable, Sendable {
@@ -48,17 +50,44 @@ public protocol TerminalPort: Sendable {
     func send(_ handle: String, text: String) -> SendOutcome
 }
 
+/// 예약을 받을 수 있는 에이전트 — Orca 터미널 목록의 `agentIdentity` 값.
+public enum AgentKind: String, CaseIterable, Codable, Sendable {
+    case claude, codex, gemini
+
+    public init?(identity: String?) {
+        guard let identity, let kind = AgentKind(rawValue: identity.lowercased()) else { return nil }
+        self = kind
+    }
+
+    public var displayName: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .gemini: "Gemini CLI"
+        }
+    }
+}
+
 public enum PromptState: Equatable, Sendable {
     case empty
     case typing
-    /// 입력 칸이 안 보인다 — 질문·권한 창이 떠 있거나 Claude Code 화면이 아니다.
+    /// 입력 칸이 안 보인다 — 질문·권한 창이 떠 있거나 에이전트 화면이 아니다.
     case unknown
 }
 
-/// Claude Code 화면 끝의 입력 칸(가로줄 바로 아래 `❯` 줄)이 비었는지.
+/// 에이전트 화면 끝의 입력 칸이 비었는지. 에이전트마다 입력 칸 모양이 달라 따로 읽는다.
+/// 주의: Orca 화면 읽기에는 사람이 쳐 둔 글이 보이지 않는다(2026-11-11 Claude Code 실측) — 입력 중 여부는 lastOutputAt 으로 본다.
+public func promptState(screenTail lines: [String], agent: AgentKind = .claude) -> PromptState {
+    switch agent {
+    case .claude: claudePromptState(lines)
+    case .codex: codexPromptState(lines)
+    case .gemini: geminiPromptState(lines)
+    }
+}
+
+/// Claude Code — 가로줄 바로 아래 `❯` 줄.
 /// 빈 칸의 흐린 예시 문구는 `❯` 뒤에 NBSP 가 붙고(`❯\u{a0}Try "…"`), 오른쪽 끝 안내(`← 1 agent`)는 공백 여러 칸 뒤에 붙는다.
-/// 주의: Orca 화면 읽기에는 사람이 쳐 둔 글이 보이지 않는다(2026-11-11 실측) — 입력 중 여부는 lastOutputAt 으로 본다.
-public func promptState(screenTail lines: [String]) -> PromptState {
+func claudePromptState(_ lines: [String]) -> PromptState {
     guard lines.count >= 2 else { return .unknown }
     for i in stride(from: lines.count - 1, through: 1, by: -1) {
         let line = lines[i].trimmingCharacters(in: .whitespaces)
@@ -79,6 +108,43 @@ public func promptState(screenTail lines: [String]) -> PromptState {
 /// 입력 칸 앞 표시 — Claude Code 는 `❯`. 글꼴·버전에 따라 `›`·`>` 로 그려질 수 있어 함께 받는다.
 let promptMarks: [Character] = ["❯", "›", ">"]
 
+/// Codex(0.166 실측) — 화면 끝의 마지막 `›` 줄이 입력 칸이고, 아래에는 모델·경로 줄과 「? for shortcuts」 안내만 온다(가로줄 없음).
+/// 지나간 대화의 사용자 글도 `›` 로 시작해 맨 끝 몇 줄 안의 것만 본다. 권한·선택 창은 `› 1. Yes, proceed` 처럼 번호가 붙는다.
+func codexPromptState(_ lines: [String]) -> PromptState {
+    let tail = Array(trimmedTail(lines).suffix(6))
+    guard let i = tail.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("›") }) else { return .unknown }
+    let rest = String(tail[i].trimmingCharacters(in: .whitespaces).dropFirst())
+        .trimmingCharacters(in: CharacterSet(charactersIn: " \u{a0}"))
+    if rest.isEmpty || codexPlaceholders.contains(rest) { return .empty }
+    if rest.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil { return .unknown }
+    return .typing
+}
+
+/// Codex 빈 입력 칸의 흐린 예시 문구(0.166 바이너리에 있는 두 가지).
+let codexPlaceholders: Set<String> = ["Ask Codex to do anything", "Ask a follow-up question"]
+
+/// Gemini CLI — 둥근 테두리 상자 안의 `> ` 줄. 빈 칸은 「Type your message or @path/to/file」.
+/// `! ` 는 셸 모드라 글을 보내면 셸 명령으로 돈다 — 입력 칸이 없는 것으로 본다.
+func geminiPromptState(_ lines: [String]) -> PromptState {
+    for line in trimmedTail(lines).suffix(12).reversed() {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("│") || t.hasPrefix("|") else { continue }
+        let inner = t.trimmingCharacters(in: CharacterSet(charactersIn: "│| \u{a0}"))
+        guard let mark = inner.first, mark == ">" || mark == "!" else { continue }
+        if mark == "!" { return .unknown }
+        let rest = inner.dropFirst().trimmingCharacters(in: CharacterSet(charactersIn: " \u{a0}"))
+        return rest.isEmpty || rest.hasPrefix("Type your message") ? .empty : .typing
+    }
+    return .unknown
+}
+
+/// 화면 맨 아래 빈 줄을 뗀다.
+func trimmedTail(_ lines: [String]) -> [String] {
+    var out = lines
+    while let last = out.last, last.trimmingCharacters(in: .whitespaces).isEmpty { out.removeLast() }
+    return out
+}
+
 /// 입력 칸 위의 가로줄 — 줄 대부분이 가로선 글자(─ ━ ═ — - ╌ ┄)이고 10자 이상.
 func isRule(_ line: String) -> Bool {
     let t = line.trimmingCharacters(in: .whitespaces)
@@ -87,16 +153,21 @@ func isRule(_ line: String) -> Bool {
     return Double(n) / Double(t.count) >= 0.8
 }
 
-/// Claude Code 의 도구 권한 창(「Do you want to proceed?」 + 「1. Yes」)이 화면 끝에 떠 있는지.
+/// 도구 권한 창이 화면 끝에 떠 있는지 — 묻는 줄과 「예」 선택지가 함께 있어야 한다.
+/// Claude Code 「Do you want to proceed?」+「1. Yes」 · Codex 「Would you like to run the following command?」+「Yes, proceed」
+/// · Gemini CLI 「Allow execution?」·「Apply this change?」+「Yes, allow once」.
 public func permissionPrompt(screenTail lines: [String]) -> Bool {
     let recent = lines.suffix(30).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " │|\u{a0}")) }
-    let asks = recent.contains { $0.contains("Do you want to") }
+    let asks = recent.contains { line in permissionQuestions.contains { line.contains($0) } }
     let yes = recent.contains { line in
-        let l = line.drop(while: { "❯›> ".contains($0) })
-        return l.hasPrefix("1. Yes") || l.hasPrefix("1.Yes")
+        let l = line.drop(while: { "❯›>●○ ".contains($0) })
+        return l.hasPrefix("1. Yes") || l.hasPrefix("1.Yes") || permissionYes.contains { l.contains($0) }
     }
     return asks && yes
 }
+
+let permissionQuestions = ["Do you want to", "Would you like to", "Allow execution", "Apply this change?"]
+let permissionYes = ["Yes, proceed", "Yes, just this once", "Yes, allow once"]
 
 /// Orca CLI(`orca terminal …`)로 터미널을 다룬다.
 public struct OrcaCLI: TerminalPort {

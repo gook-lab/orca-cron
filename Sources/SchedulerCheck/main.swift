@@ -589,6 +589,95 @@ do {
     check(promptState(screenTail: [rule, "❯ ", "> 인용"]) == .empty, "가로줄 없는 > 는 건너뛰고 위 입력 칸을 찾음")
 }
 
+// MARK: Codex·Gemini 터미널
+do {
+    check(AgentKind(identity: "codex") == .codex && AgentKind(identity: "Gemini") == .gemini && AgentKind(identity: nil) == nil
+          && AgentKind(identity: "opencode") == nil, "Orca agentIdentity 를 에이전트 종류로")
+
+    // Codex 0.166 실화면(2026-11-13) — 지나간 사용자 글도 › 로 시작한다
+    let codexIdle = [
+        "  Worked for 6m 21s • 2:25 PM",
+        "› Claude입니다. 이력서 점검 고맙습니다. 사이트 수정 3개는 로컬 커",
+        "  밋했습니다(104e66d, 04945c4). 대기해 주세요.",
+        "  Worked for 3s • 2:28 PM",
+        "  ↳ Recap: 포트폴리오 토이 UI·숫자와 이력서 검토 보고서를 완료했습니다.",
+        "           중입니다.",
+        "› Ask Codex to do anything",
+        "  GPT-6.1-Sol low · ~/sonix/toy · 토이 섹션 교차 검토",
+        "  ? for shortcuts                                         ⚠ 1 warning · f2 to view",
+        "",
+    ]
+    check(promptState(screenTail: codexIdle, agent: .codex) == .empty, "Codex 빈 입력 칸(예시 문구)")
+    check(promptState(screenTail: codexIdle, agent: .claude) == .unknown, "Claude 규칙으로는 Codex 입력 칸을 못 찾음")
+    var follow = codexIdle
+    follow[6] = "› Ask a follow-up question"
+    check(promptState(screenTail: follow, agent: .codex) == .empty, "Codex 다른 예시 문구도 빈 칸")
+    var typed = codexIdle
+    typed[6] = "› 오늘 에러 정리해 줘"
+    check(promptState(screenTail: typed, agent: .codex) == .typing, "Codex 쓰던 글")
+    let codexAsk = [
+        "  Would you like to run the following command?",
+        "  $ /Apps/OrcaCron finish --run r1 --status 성공",
+        "› 1. Yes, proceed (y)",
+        "  2. Yes, and don't ask again for this command in this session (p)",
+        "  3. No, and tell Codex what to do differently (esc)",
+        "  Press enter to confirm or esc to cancel",
+    ]
+    check(promptState(screenTail: codexAsk, agent: .codex) == .unknown, "Codex 승인 창의 › 는 입력 칸이 아님")
+    check(permissionPrompt(screenTail: codexAsk), "Codex 승인 창")
+    let scrolled = ["› 지난 사용자 글", "• 답 첫 줄", "  둘째 줄", "  셋째 줄", "  넷째 줄", "  다섯째 줄", "  Worked for 3s • 2:28 PM"]
+    check(promptState(screenTail: scrolled, agent: .codex) == .unknown, "맨 끝 몇 줄 밖의 지나간 사용자 글은 입력 칸 아님")
+    check(!permissionPrompt(screenTail: codexIdle), "Codex 평소 화면은 승인 창 아님")
+
+    // Gemini CLI — 둥근 상자 안의 > 줄(소스 InputPrompt 기준)
+    let box = "╭────────────────────────────────────────────╮"
+    let boxEnd = "╰────────────────────────────────────────────╯"
+    let footer = "~/sonix/toy (main*)        no sandbox        gemini-2.5-pro (99% context left)"
+    check(promptState(screenTail: ["✦ 끝났습니다.", box, "│ >   Type your message or @path/to/file    │", boxEnd, footer], agent: .gemini) == .empty,
+          "Gemini 빈 입력 칸(예시 문구)")
+    check(promptState(screenTail: [box, "│ > 오늘 에러 정리          │", "│   둘째 줄                 │", boxEnd, footer], agent: .gemini) == .typing,
+          "Gemini 쓰던 글(여러 줄)")
+    check(promptState(screenTail: [box, "│ !   Type your message or @path/to/file    │", boxEnd, footer], agent: .gemini) == .unknown,
+          "Gemini 셸 모드는 보내지 않음")
+    check(promptState(screenTail: ["> 지난 사용자 글", "✦ 답"], agent: .gemini) == .unknown, "상자 밖 > 는 입력 칸 아님")
+    let geminiAsk = [
+        "╭──────────────────────────────╮",
+        "│ ?  Shell OrcaCron finish     │",
+        "│ Allow execution?             │",
+        "│ ● Yes, allow once            │",
+        "│ ○ Yes, allow always ...      │",
+        "│ ○ No (esc)                   │",
+        "╰──────────────────────────────╯",
+    ]
+    check(permissionPrompt(screenTail: geminiAsk), "Gemini 승인 창")
+    check(promptState(screenTail: geminiAsk, agent: .gemini) == .unknown, "Gemini 승인 창에는 입력 칸 없음")
+
+    // 실행기 — Codex 터미널에 보내고, 지금 떠 있는 에이전트로 아이콘 정보를 채운다
+    let codexTerm = TerminalInfo(handle: "term_c", title: "코덱스", agent: "codex", worktreePath: "/x/toy", connected: true, writable: true)
+    let port = FakePort(terminals: [codexTerm], idle: ["term_c"])
+    port.tails["term_c"] = codexIdle
+    var store = StoreFile(schedules: [schedule("cx", cron: "0 9 * * *", terminal: "term_c")])
+    store.schedules[0].runNowRequestedAt = at(2026, 11, 13, 9, 0)
+    _ = Engine.tick(&store, port: port, config: config, now: at(2026, 11, 13, 9, 0, 10), makeRunId: rid)
+    check(port.sent.count == 1 && port.sent[0].0 == "term_c", "Codex 빈 입력 칸이면 보냄")
+    check(store.schedules[0].terminal.kind == .codex, "예약에 에이전트 종류를 남김")
+    _ = Engine.checkInFlight(&store, port: port, terminals: [codexTerm], now: at(2026, 11, 13, 9, 1), finishedQuiet: 600)
+    check(store.schedules[0].runId != nil && store.schedules[0].blocked == nil, "막 보낸 Codex 는 결과를 기다림")
+    port.tails["term_c"] = codexAsk
+    _ = Engine.checkInFlight(&store, port: port, terminals: [codexTerm], now: at(2026, 11, 13, 9, 2), finishedQuiet: 600)
+    check(store.schedules[0].blocked?.contains("권한 확인") == true, "Codex 가 결과 명령 승인 창에서 멈추면 알림")
+    // 같은 탭에서 에이전트를 바꾸면 따라간다 — 에이전트가 꺼진 동안은 그대로 둔다
+    port.terminals = [TerminalInfo(handle: "term_c", title: "셸", agent: nil, worktreePath: "/x/toy", connected: true, writable: true)]
+    _ = Engine.reconnect(&store, terminals: port.terminals)
+    check(store.schedules[0].terminal.kind == .codex, "에이전트가 꺼진 동안은 마지막 종류를 유지")
+    port.terminals = [TerminalInfo(handle: "term_c", title: "제미나이", agent: "gemini", worktreePath: "/x/toy", connected: true, writable: true)]
+    _ = Engine.reconnect(&store, terminals: port.terminals)
+    check(store.schedules[0].terminal.kind == .gemini, "다른 에이전트를 띄우면 따라감")
+    // 옛 예약 파일(agent 칸 없음)도 읽힌다
+    let old = #"{"handle":"term_a","label":"x","tabId":"t","leafId":"l"}"#
+    check((try? JSONDecoder().decode(TerminalRef.self, from: Data(old.utf8)))?.agent == nil, "agent 칸 없는 옛 예약도 읽음")
+}
+
 // MARK: 화면이 바뀐 것 같음 경고
 do {
     var s = schedule("w", cron: "0 9 * * *")
