@@ -1355,7 +1355,7 @@ struct FirstRunHint: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("처음 쓰신다면").font(.caption.weight(.semibold))
-            Text("터미널 줄의 \(Image(systemName: "calendar.badge.plus")) 로 예약을, \(Image(systemName: "paperplane")) 로 한 번 보내기를 만듭니다. 받는 Claude 가 결과까지 남기는지는 터미널 줄 우클릭 → 「연결 시험 보내기」로 먼저 확인해 보세요.")
+            Text("터미널 줄의 \(Image(systemName: "calendar.badge.plus")) 로 예약을, \(Image(systemName: "paperplane")) 로 한 번 보내기를 만듭니다. 쓰던 터미널에 걸어도 됩니다 — 화면이 조용해질 때까지 기다렸다 보냅니다. Orca 가 꺼져 있거나 그 탭이 닫혀 있으면 그 회차는 건너뜁니다. 받는 Claude 가 결과까지 남기는지는 터미널 줄 우클릭 → 「연결 시험 보내기」로 먼저 확인해 보세요.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1628,7 +1628,7 @@ struct EditView: View {
                     Toggle("보내기 전에 대화 비우기(/clear)", isOn: Binding(get: { draft.clearFirst == true },
                                                                        set: { draft.clearFirst = $0 ? true : nil }))
                         .toggleStyle(.checkbox)
-                    Text("매번 빈 대화에서 시작해 맥락이 쌓이지 않습니다. 그 터미널의 지금 대화가 지워지니 예약 전용 터미널에만 켜세요.")
+                    Text("켜면 보낼 때마다 그 터미널의 대화를 지우고 빈 대화에서 시작합니다. 대화가 지워지니 이 칸을 켤 때만 예약 전용 터미널을 쓰세요. 꺼 두면 쓰던 터미널에 걸어도 화면이 조용해질 때까지 기다렸다 보냅니다.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
