@@ -4,6 +4,23 @@ Orca 에 떠 있는 에이전트 터미널(Claude Code · Codex · Gemini CLI)�
 
 Orca 에 떠 있는 터미널에 보내는 방식이라 Orca 가 꺼져 있거나 그 탭이 닫혀 있으면 보낼 곳이 없습니다. 그 회차는 「건너뜀 — 터미널을 찾을 수 없음」으로 기록하고, Orca 를 다시 켜서 같은 탭이 살아나면 자동으로 다시 붙습니다.
 
+## Orca 플러그인 판 — Agent Scheduler
+
+같은 일을 Orca 오른쪽 사이드바의 패널에서 하는 플러그인 판 [Agent Scheduler](https://github.com/gook-lab/orca-agent-scheduler)가 있습니다. Orca 1.4.248 이상(macOS)에서 아래 명령으로 설치합니다.
+
+```bash
+orca plugin install gook-lab/orca-agent-scheduler
+```
+
+| | OrcaCron(이 앱) | Agent Scheduler(플러그인) |
+|---|---|---|
+| 화면 | 메뉴 막대 팝업 | Orca 사이드바 패널(영어·한국어) |
+| 실행 | 로그인 때부터 따로 실행(launchd) | Orca 가 켜져 있는 동안 |
+| 보낼 글 | 템플릿 파일(`/` 자동완성) 또는 직접 입력 | 예약에 직접 입력 |
+| 결과 | 에이전트가 `OrcaCron finish` 로 결과 글을 남김 | 끝난 시각과 걸린 시간만 기록 |
+
+두 판은 예약을 공유하지 않습니다. 같은 터미널에 같은 예약을 양쪽에 걸면 글이 두 번 들어가니 한쪽에만 걸어 주세요.
+
 ## 지원 에이전트 — Claude Code · Codex · Gemini CLI
 
 Orca 터미널 목록의 에이전트 표시(`agentIdentity`)가 `claude`·`codex`·`gemini` 인 터미널에 보냅니다. 목록의 터미널 줄과 터미널 고르기 칸 앞의 작은 아이콘이 그 터미널의 에이전트입니다 — 별표는 Claude Code, `>_` 는 Codex(Codex CLI 머리줄과 같은 모양), 반짝임은 Gemini CLI. 탭이 닫혀도 마지막에 본 에이전트 아이콘을 흐리게 남깁니다.
