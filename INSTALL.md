@@ -1,5 +1,7 @@
 # OrcaCron 설치 가이드 — 에이전트에게 링크로 맡기기
 
+> **업데이트 종료 (2026-11-17).** 새로 설치한다면 이 앱 대신 Orca 플러그인 [Agent Scheduler](https://github.com/gook-lab/orca-agent-scheduler)를 써 주세요(`orca plugin install gook-lab/orca-agent-scheduler`). 이 앱은 더 이상 새 기능이나 수정을 올리지 않습니다. 이미 쓰고 있다면 [README 「플러그인으로 옮기기」](README.md#플러그인으로-옮기기--agent-scheduler-설치--예약-가져오기)를 봐 주세요.
+
 Claude Code·Codex 같은 에이전트에게 이 문서 링크를 주고 아래처럼 말하면 설치까지 끝납니다.
 
 > https://github.com/gook-lab/orca-cron/blob/main/INSTALL.md 보고 설치해줘
@@ -126,7 +128,7 @@ rm -f ~/Library/LaunchAgents/lab.gook.orcacron.plist
 rm -rf ~/Applications/OrcaCron.app
 ```
 
-예약과 템플릿은 `~/.orca-cron` 에 남습니다. 필요 없으면 따로 지워 주세요. 소스 폴더(`~/Developer/orca-cron`)도 따로 지우면 됩니다.
+예약과 템플릿은 `~/.orca-cron` 에 남습니다. 필요 없으면 따로 지워 주세요. 플러그인 Agent Scheduler 로 예약을 가져갔다면 이 폴더는 남겨 두세요 — 템플릿으로 만든 예약이 `~/.orca-cron/tasks/` 의 파일을 읽습니다. 소스 폴더(`~/Developer/orca-cron`)도 따로 지우면 됩니다.
 
 ## 자주 막히는 곳 — 증상별 원인 · 해결
 

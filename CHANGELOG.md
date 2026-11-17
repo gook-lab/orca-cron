@@ -2,6 +2,11 @@
 
 버전은 `1.<커밋 수>` 입니다. 메뉴 머리 줄 오른쪽에서 지금 버전을 보고, 새 버전이 있으면 그 자리의 「업데이트 N」으로 받습니다.
 
+## v1.24 — 업데이트 종료 안내 (2026-11-17)
+
+- OrcaCron 은 이 버전을 끝으로 새 기능이나 수정을 올리지 않습니다. 같은 일을 Orca 사이드바에서 하는 플러그인 [Agent Scheduler](https://github.com/gook-lab/orca-agent-scheduler)를 써 주세요.
+- README 에 플러그인으로 옮기는 순서(설치 → 「OrcaCron 에서 가져오기」 → 이 앱의 예약 끄기 → 플러그인에서 켜기)를 넣었습니다. 앱 동작은 그대로입니다.
+
 ## v1.23 — Orca 플러그인 판 안내 (2026-11-17)
 
 - README 에 Orca 사이드바에서 쓰는 플러그인 판 [Agent Scheduler](https://github.com/gook-lab/orca-agent-scheduler) 안내와 두 판의 차이 표를 넣었습니다. 앱 동작은 그대로입니다.
